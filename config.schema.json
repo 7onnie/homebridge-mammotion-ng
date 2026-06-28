@@ -1,0 +1,81 @@
+{
+  "pluginAlias": "Mammotion",
+  "pluginType": "platform",
+  "headerDisplay": "Mammotion cloud control using PyMammotion. Use a dedicated Mammotion account shared to your mower(s).",
+  "schema": {
+    "type": "object",
+    "required": [
+      "email",
+      "password"
+    ],
+    "properties": {
+      "email": {
+        "title": "Email",
+        "type": "string",
+        "description": "Mammotion account email (or account number if your account requires it)."
+      },
+      "password": {
+        "title": "Password",
+        "type": "string",
+        "format": "password"
+      },
+      "pythonPath": {
+        "title": "Python path",
+        "type": "string",
+        "default": "python3",
+        "description": "Python binary used to run the PyMammotion bridge."
+      },
+      "areaNameFallbacks": {
+        "title": "Area name fallbacks",
+        "type": "object",
+        "description": "Optional fallback area names when Mammotion does not return map/plan areas. Use mower device name as key (or '*' for default), e.g. {\"Luba-VAFFT58A\":[\"Front Lawn\",\"Back Lawn\"]}.",
+        "additionalProperties": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "pollIntervalSeconds": {
+        "title": "Polling interval (seconds)",
+        "type": "integer",
+        "default": 15,
+        "minimum": 5,
+        "maximum": 120
+      },
+      "offCommand": {
+        "title": "Off command",
+        "type": "string",
+        "default": "pause",
+        "oneOf": [
+          {
+            "title": "Pause",
+            "enum": ["pause"]
+          },
+          {
+            "title": "Dock",
+            "enum": ["dock"]
+          },
+          {
+            "title": "Cancel",
+            "enum": ["cancel"]
+          }
+        ]
+      },
+      "enableMatterRvc": {
+        "title": "Enable Matter Robot Vacuum",
+        "type": "boolean",
+        "default": true,
+        "description": "Use Matter Robotic Vacuum Cleaner accessory when Matter is available and enabled in Homebridge; otherwise fallback to HomeKit switch."
+      },
+      "deviceFilter": {
+        "title": "Device filter",
+        "type": "array",
+        "items": {
+          "type": "string"
+        },
+        "description": "Optional list of exact device names to expose, e.g. Luba-123456."
+      }
+    }
+  }
+}
