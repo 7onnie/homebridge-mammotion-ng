@@ -1,7 +1,7 @@
 import type { Logger } from 'homebridge';
 
 import type { MammotionClient } from './mammotion-client';
-import type { MammotionDeviceInfo, MammotionState } from './types';
+import type { DerivedState, MammotionDeviceInfo, MammotionState } from './types';
 
 type MatterApi = {
   uuid: { generate: (input: string) => string };
@@ -133,11 +133,11 @@ export class MammotionMatterVacuum {
     return this.device.name;
   }
 
-  async updateState(nextState: MammotionState): Promise<void> {
+  async updateState(nextState: MammotionState, derived: DerivedState): Promise<void> {
     this.state = nextState;
 
     const runMode = this.isWorking(nextState) ? 1 : 0;
-    const operationalState = this.toOperationalState(nextState);
+    const operationalState = this.toOperationalState(nextState, derived);
 
     await this.matterApi.updateAccessoryState(this.uuid, 'rvcRunMode', {
       currentMode: runMode,
@@ -148,8 +148,11 @@ export class MammotionMatterVacuum {
     });
   }
 
-  private toOperationalState(state: MammotionState): number {
-    if (!state.online || state.hasError) {
+  private toOperationalState(state: MammotionState, derived: DerivedState): number {
+    if (derived.error) {
+      return 3; // Error
+    }
+    if (!state.online) {
       return 3;
     }
 

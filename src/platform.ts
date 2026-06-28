@@ -6,10 +6,13 @@ import type {
 } from 'homebridge';
 
 import { MammotionAccessory } from './accessory';
+import { Debouncer } from './debouncer';
 import { MammotionClient } from './mammotion-client';
 import { MammotionMatterVacuum } from './matter-accessory';
+import { MammotionSensorAccessory } from './sensor-accessory';
 import { PLATFORM_NAME, PLUGIN_NAME } from './settings';
-import type { MammotionDeviceInfo, MammotionPlatformConfig } from './types';
+import { mapState } from './state-mapper';
+import type { DerivedState, MammotionDeviceInfo, MammotionPlatformConfig } from './types';
 
 type AccessoryContext = {
   deviceName: string;
@@ -33,7 +36,10 @@ export class MammotionPlatform implements DynamicPlatformPlugin {
   private pollTimer?: NodeJS.Timeout;
   private started = false;
   private readonly client: MammotionClient;
-  private readonly usingMatterRvc: boolean;
+  private readonly matterEnabled: boolean;
+  private readonly sensorHandlers = new Map<string, MammotionSensorAccessory>();
+  private readonly debouncer = new Debouncer();
+  private readonly offlineCounts = new Map<string, number>();
   private readonly uuidNamespace: string;
 
   constructor(
@@ -45,7 +51,7 @@ export class MammotionPlatform implements DynamicPlatformPlugin {
     this.config = typedConfig;
     this.pollingSeconds = Math.max(5, typedConfig.pollIntervalSeconds ?? 15);
     this.client = new MammotionClient(log, typedConfig);
-    this.usingMatterRvc = this.shouldUseMatterRvc();
+    this.matterEnabled = this.shouldUseMatterRvc();
     this.uuidNamespace = this.buildUuidNamespace();
 
     if (!this.config.email || !this.config.password) {
@@ -82,10 +88,13 @@ export class MammotionPlatform implements DynamicPlatformPlugin {
 
     try {
       await this.client.start();
-      if (this.usingMatterRvc) {
+      if (this.matterEnabled) {
         await this.discoverAndSyncMatterAccessories();
       } else {
-        await this.discoverAndSyncAccessories();
+        await this.discoverAndSyncAccessories(); // legacy HAP switch fallback
+      }
+      if (this.config.enableStateSensors !== false) {
+        await this.discoverAndSyncSensors();
       }
       await this.pollOnce();
 
@@ -198,22 +207,57 @@ export class MammotionPlatform implements DynamicPlatformPlugin {
     }
   }
 
+  private async discoverAndSyncSensors(): Promise<void> {
+    const devices = this.filterDevices(await this.client.discoverDevices());
+    const enable = {
+      docked: this.config.sensorDocked !== false,
+      mowing: this.config.sensorMowing !== false,
+      error: this.config.sensorError !== false,
+    };
+    const debounceMs = Math.max(0, (this.config.sensorDebounceSeconds ?? 30) * 1000);
+
+    for (const device of devices) {
+      const uuid = this.api.hap.uuid.generate(`${PLUGIN_NAME}:${this.uuidNamespace}:${device.name}:sensors`);
+      const existing = this.accessories.find(item => item.UUID === uuid);
+      const accessory = existing ?? new this.api.platformAccessory<AccessoryContext>(`${device.name} Sensors`, uuid);
+      const handler = new MammotionSensorAccessory(this, accessory, device.name, this.debouncer, debounceMs, enable);
+      this.sensorHandlers.set(device.name, handler);
+      if (existing) {
+        this.api.updatePlatformAccessories([existing]);
+      } else {
+        this.api.registerPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, [accessory]);
+        this.accessories.push(accessory);
+        this.log.info(`Added state sensors for ${device.name}`);
+      }
+    }
+  }
+
   private async pollOnce(): Promise<void> {
     const states = await this.client.pollStates();
-    if (this.usingMatterRvc) {
-      await Promise.all(states.map(async state => {
-        const handler = this.matterHandlers.get(state.name);
-        if (handler) {
-          await handler.updateState(state);
-        }
-      }));
-      return;
-    }
+    const gracePolls = Math.max(0, this.config.offlineGracePolls ?? 2);
+    const errorIncludesOffline = this.config.errorIncludesOffline !== false;
+    const now = Date.now();
 
     for (const state of states) {
-      const handler = this.handlers.get(state.name);
-      if (handler) {
-        handler.updateState(state);
+      // offline grace counter
+      const prev = this.offlineCounts.get(state.name) ?? 0;
+      const count = state.online ? 0 : prev + 1;
+      this.offlineCounts.set(state.name, count);
+      const offlineConfirmed = count > gracePolls;
+
+      const derived: DerivedState = mapState(state, { offlineConfirmed, errorIncludesOffline });
+
+      const matter = this.matterHandlers.get(state.name);
+      if (matter) {
+        await matter.updateState(state, derived).catch((e: Error) => this.log.debug(`Matter update failed: ${e.message}`));
+      }
+      const legacy = this.handlers.get(state.name);
+      if (legacy) {
+        try { legacy.updateState(state); } catch (e) { this.log.debug(`HAP switch update failed: ${(e as Error).message}`); }
+      }
+      const sensors = this.sensorHandlers.get(state.name);
+      if (sensors) {
+        try { sensors.updateState(derived, now); } catch (e) { this.log.debug(`Sensor update failed: ${(e as Error).message}`); }
       }
     }
   }
