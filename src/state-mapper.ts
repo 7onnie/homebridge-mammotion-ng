@@ -39,6 +39,6 @@ export function mapState(
     error,
     docked: error ? false : docked,
     mowing: error ? false : mowing,
-    active: mowing || returning,
+    active: error ? false : (mowing || returning),
   };
 }

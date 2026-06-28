@@ -37,4 +37,14 @@ describe('mapState', () => {
     const d = mapState({ ...base, sysStatus: 0 }, opt);
     expect(d).toMatchObject({ docked: false, mowing: false, error: false });
   });
+  it('error from MODE_OTA_UPGRADE_FAIL(23) and MODE_LOCATION_ERROR(37)', () => {
+    expect(mapState({ ...base, sysStatus: 23 }, opt).error).toBe(true);
+    expect(mapState({ ...base, sysStatus: 37 }, opt).error).toBe(true);
+  });
+  it('active is false during an error even while sysStatus=MODE_WORKING', () => {
+    const d = mapState({ ...base, sysStatus: 13 }, { offlineConfirmed: false, errorIncludesOffline: true, ...{} });
+    expect(d.active).toBe(true); // sanity: working with no error -> active
+    const e = mapState({ ...base, sysStatus: 13, hasError: true }, opt);
+    expect(e).toMatchObject({ error: true, mowing: false, active: false });
+  });
 });
