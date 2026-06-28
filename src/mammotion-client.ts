@@ -27,6 +27,7 @@ export class MammotionClient extends EventEmitter {
   private process?: ChildProcessWithoutNullStreams;
   private nextId = 1;
   private pending = new Map<number, Pending>();
+  private timeouts = new Map<number, NodeJS.Timeout>();
   private buffer = '';
   private pythonPath: string;
   private readonly userConfiguredPythonPath: boolean;
@@ -74,6 +75,8 @@ export class MammotionClient extends EventEmitter {
         request.reject(error);
       }
       this.pending.clear();
+      for (const t of this.timeouts.values()) { clearTimeout(t); }
+      this.timeouts.clear();
       this.process = undefined;
       this.emit('exit', error);
     });
@@ -117,12 +120,21 @@ export class MammotionClient extends EventEmitter {
 
     const id = this.nextId++;
     const payload = JSON.stringify({ id, method, params });
+    const timeoutMs = ({ init: 120000, command: 60000, poll: 30000, shutdown: 5000 } as Record<string, number>)[method] ?? 30000;
 
     const responsePromise = new Promise<T>((resolve, reject) => {
       this.pending.set(id, {
         resolve: (value: unknown) => resolve(value as T),
         reject,
       });
+      const timer = setTimeout(() => {
+        if (this.pending.delete(id)) {
+          this.timeouts.delete(id);
+          reject(new Error(`Bridge request '${method}' timed out after ${timeoutMs}ms`));
+        }
+      }, timeoutMs);
+      timer.unref?.();
+      this.timeouts.set(id, timer);
     });
 
     this.process.stdin.write(`${payload}\n`);
@@ -163,6 +175,8 @@ export class MammotionClient extends EventEmitter {
       }
 
       this.pending.delete(message.id);
+      const timer = this.timeouts.get(message.id);
+      if (timer) { clearTimeout(timer); this.timeouts.delete(message.id); }
 
       if (!message.ok) {
         request.reject(new Error(message.error ?? 'Unknown bridge error'));
