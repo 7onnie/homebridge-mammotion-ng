@@ -122,6 +122,24 @@ class Bridge:
         return handle
 
     @staticmethod
+    def _resolve_plan_id(state, prefer_name=None):
+        """state.map.plan is dict[plan_id -> Plan]. Return (plan_id, label) for
+        the named plan, else the first; (None, None) if none stored."""
+        plans = dict(getattr(getattr(state, "map", None), "plan", {}) or {})
+        if not plans:
+            return (None, None)
+        items = list(plans.items())
+        if prefer_name:
+            for pid, plan in items:
+                tn = str(getattr(plan, "task_name", "")).strip()
+                jn = str(getattr(plan, "job_name", "")).strip()
+                if prefer_name in (tn, jn):
+                    return (str(getattr(plan, "plan_id", "") or pid), tn or jn)
+        pid, plan = items[0]
+        label = str(getattr(plan, "task_name", "")).strip() or str(getattr(plan, "job_name", "")).strip()
+        return (str(getattr(plan, "plan_id", "") or pid), label)
+
+    @staticmethod
     def _raw_state(handle: Any) -> Any:
         """Return the underlying MowerDevice (== old MowingDevice) for a handle."""
         return handle.snapshot.raw
@@ -256,15 +274,19 @@ class Bridge:
     async def _start(self, name: str, mode: int | None) -> None:
         if mode == WorkMode.MODE_WORKING:
             return
-        if mode == WorkMode.MODE_RETURNING:
-            await self._send_command(name, "cancel_return_to_dock")
-            await self._send_command(name, "query_generate_route_information")
-            await self._send_command(name, "start_job")
-            return
         if mode == WorkMode.MODE_PAUSE:
             await self._send_command(name, "resume_execute_task")
             return
-
+        # Idle / docked / returning: a bare start_job is a no-op (no task loaded).
+        # Execute the saved plan via single_schedule, like the official app.
+        if mode == WorkMode.MODE_RETURNING:
+            await self._send_command(name, "cancel_return_to_dock")
+        plan_state = self._raw_state(self._handle_by_name(name))
+        plan_id, _label = self._resolve_plan_id(plan_state)
+        if plan_id:
+            await self._send_command(name, "single_schedule", plan_id=plan_id)
+            return
+        # Fallback when no stored plan exists.
         await self._send_command(name, "query_generate_route_information")
         await self._send_command(name, "start_job")
 
@@ -286,19 +308,23 @@ class Bridge:
 
         await self._send_command(name, "return_to_dock")
 
-    async def _cancel(self, name: str, mode: int | None) -> None:
+    async def _cancel(self, name: str, mode: int | None) -> dict:
+        partial = {"cancelled": False, "docked": False, "dock_error": None}
         if mode == WorkMode.MODE_WORKING:
             await self._send_command(name, "pause_execute_task")
             await self._request_iot_sync(name)
-            await self._send_command(name, "cancel_job")
-            return
-        if mode == WorkMode.MODE_RETURNING:
-            await self._send_command(name, "cancel_return_to_dock")
-            await self._request_iot_sync(name)
-            await self._send_command(name, "cancel_job")
-            return
-        if mode == WorkMode.MODE_PAUSE:
-            await self._send_command(name, "cancel_job")
+        await self._send_command(name, "cancel_job")
+        partial["cancelled"] = True
+        # Re-read fresh state AFTER cancel to decide whether to send the mower home.
+        await self._request_iot_sync(name)
+        dev = self._raw_state(self._handle_by_name(name)).report_data.dev
+        if int(getattr(dev, "charge_state", 0) or 0) == 0 and dev.sys_status != WorkMode.MODE_RETURNING:
+            try:
+                await self._send_command(name, "return_to_dock")
+                partial["docked"] = True
+            except Exception as ex:  # mower stopped but dock failed -> report, don't raise
+                partial["dock_error"] = repr(ex)
+        return partial
 
     async def _request_iot_sync(self, name: str) -> None:
         await self._send_command(
