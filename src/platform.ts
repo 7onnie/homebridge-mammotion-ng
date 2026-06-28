@@ -9,6 +9,7 @@ import { MammotionAccessory } from './accessory';
 import { Debouncer } from './debouncer';
 import { MammotionClient } from './mammotion-client';
 import { MammotionMatterVacuum } from './matter-accessory';
+import { MammotionAbortSwitch } from './abort-switch';
 import { MammotionSensorAccessory } from './sensor-accessory';
 import { PLATFORM_NAME, PLUGIN_NAME } from './settings';
 import { mapState } from './state-mapper';
@@ -16,7 +17,7 @@ import type { DerivedState, MammotionDeviceInfo, MammotionPlatformConfig } from 
 
 type AccessoryContext = {
   deviceName: string;
-  kind?: 'sensors';
+  kind?: 'sensors' | 'abort';
 };
 
 export class MammotionPlatform implements DynamicPlatformPlugin {
@@ -39,6 +40,7 @@ export class MammotionPlatform implements DynamicPlatformPlugin {
   private readonly client: MammotionClient;
   private readonly matterEnabled: boolean;
   private readonly sensorHandlers = new Map<string, MammotionSensorAccessory>();
+  private readonly abortHandlers = new Map<string, MammotionAbortSwitch>();
   private readonly debouncer = new Debouncer();
   private readonly offlineCounts = new Map<string, number>();
   private readonly uuidNamespace: string;
@@ -95,6 +97,7 @@ export class MammotionPlatform implements DynamicPlatformPlugin {
         await this.discoverAndSyncAccessories(); // legacy HAP switch fallback
       }
       await this.syncSensors();
+      await this.syncAbortSwitch();
       await this.pollOnce();
 
       this.pollTimer = setInterval(() => {
@@ -145,7 +148,7 @@ export class MammotionPlatform implements DynamicPlatformPlugin {
       this.log.info(`Added accessory for ${device.name}`);
     }
 
-    const stale = this.accessories.filter(item => item.context.kind !== 'sensors' && !liveNames.has(item.context.deviceName));
+    const stale = this.accessories.filter(item => !item.context.kind && !liveNames.has(item.context.deviceName));
     if (stale.length > 0) {
       this.api.unregisterPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, stale);
       for (const accessory of stale) {
@@ -248,6 +251,44 @@ export class MammotionPlatform implements DynamicPlatformPlugin {
         }
       }
       this.log.info(`Removed ${stale.length} stale sensor accessory(s)`);
+    }
+  }
+
+  private async syncAbortSwitch(): Promise<void> {
+    const enabled = this.config.enableAbortSwitch === true;
+    const devices = enabled ? this.filterDevices(await this.client.discoverDevices()) : [];
+    const liveNames = new Set(devices.map(device => device.name));
+
+    for (const device of devices) {
+      const uuid = this.api.hap.uuid.generate(`${PLUGIN_NAME}:${this.uuidNamespace}:${device.name}:switch:abort`);
+      const existing = this.accessories.find(item => item.UUID === uuid);
+      const accessory = existing ?? new this.api.platformAccessory<AccessoryContext>(`${device.name} Abort`, uuid);
+      accessory.context.deviceName = device.name;
+      accessory.context.kind = 'abort';
+      const handler = new MammotionAbortSwitch(this, accessory, device.name, this.client);
+      this.abortHandlers.set(device.name, handler);
+      if (existing) {
+        this.api.updatePlatformAccessories([existing]);
+      } else {
+        this.api.registerPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, [accessory]);
+        this.accessories.push(accessory);
+        this.log.info(`Added Abort switch for ${device.name}`);
+      }
+    }
+
+    const stale = this.accessories.filter(
+      item => item.context.kind === 'abort' && !liveNames.has(item.context.deviceName),
+    );
+    if (stale.length > 0) {
+      this.api.unregisterPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, stale);
+      for (const acc of stale) {
+        this.abortHandlers.delete(acc.context.deviceName);
+        const index = this.accessories.findIndex(item => item.UUID === acc.UUID);
+        if (index >= 0) {
+          this.accessories.splice(index, 1);
+        }
+      }
+      this.log.info(`Removed ${stale.length} stale Abort switch(es)`);
     }
   }
 
