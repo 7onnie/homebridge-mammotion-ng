@@ -16,6 +16,7 @@ import type { DerivedState, MammotionDeviceInfo, MammotionPlatformConfig } from 
 
 type AccessoryContext = {
   deviceName: string;
+  kind?: 'sensors';
 };
 
 export class MammotionPlatform implements DynamicPlatformPlugin {
@@ -93,9 +94,7 @@ export class MammotionPlatform implements DynamicPlatformPlugin {
       } else {
         await this.discoverAndSyncAccessories(); // legacy HAP switch fallback
       }
-      if (this.config.enableStateSensors !== false) {
-        await this.discoverAndSyncSensors();
-      }
+      await this.syncSensors();
       await this.pollOnce();
 
       this.pollTimer = setInterval(() => {
@@ -146,7 +145,7 @@ export class MammotionPlatform implements DynamicPlatformPlugin {
       this.log.info(`Added accessory for ${device.name}`);
     }
 
-    const stale = this.accessories.filter(item => !liveNames.has(item.context.deviceName));
+    const stale = this.accessories.filter(item => item.context.kind !== 'sensors' && !liveNames.has(item.context.deviceName));
     if (stale.length > 0) {
       this.api.unregisterPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, stale);
       for (const accessory of stale) {
@@ -207,8 +206,10 @@ export class MammotionPlatform implements DynamicPlatformPlugin {
     }
   }
 
-  private async discoverAndSyncSensors(): Promise<void> {
-    const devices = this.filterDevices(await this.client.discoverDevices());
+  private async syncSensors(): Promise<void> {
+    const enabled = this.config.enableStateSensors !== false;
+    const devices = enabled ? this.filterDevices(await this.client.discoverDevices()) : [];
+    const liveSensorNames = new Set(devices.map(device => device.name));
     const enable = {
       docked: this.config.sensorDocked !== false,
       mowing: this.config.sensorMowing !== false,
@@ -220,6 +221,8 @@ export class MammotionPlatform implements DynamicPlatformPlugin {
       const uuid = this.api.hap.uuid.generate(`${PLUGIN_NAME}:${this.uuidNamespace}:${device.name}:sensors`);
       const existing = this.accessories.find(item => item.UUID === uuid);
       const accessory = existing ?? new this.api.platformAccessory<AccessoryContext>(`${device.name} Sensors`, uuid);
+      accessory.context.deviceName = device.name;
+      accessory.context.kind = 'sensors';
       const handler = new MammotionSensorAccessory(this, accessory, device.name, this.debouncer, debounceMs, enable);
       this.sensorHandlers.set(device.name, handler);
       if (existing) {
@@ -229,6 +232,22 @@ export class MammotionPlatform implements DynamicPlatformPlugin {
         this.accessories.push(accessory);
         this.log.info(`Added state sensors for ${device.name}`);
       }
+    }
+
+    // Remove sensor accessories for devices no longer live (or all, when sensors are disabled).
+    const stale = this.accessories.filter(
+      item => item.context.kind === 'sensors' && !liveSensorNames.has(item.context.deviceName),
+    );
+    if (stale.length > 0) {
+      this.api.unregisterPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, stale);
+      for (const acc of stale) {
+        this.sensorHandlers.delete(acc.context.deviceName);
+        const index = this.accessories.findIndex(item => item.UUID === acc.UUID);
+        if (index >= 0) {
+          this.accessories.splice(index, 1);
+        }
+      }
+      this.log.info(`Removed ${stale.length} stale sensor accessory(s)`);
     }
   }
 
