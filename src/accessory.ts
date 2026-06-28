@@ -103,7 +103,7 @@ export class MammotionAccessory {
   private async handleOnSet(value: CharacteristicValue): Promise<void> {
     const turnOn = Boolean(value);
 
-    const action: 'start' | 'pause' | 'dock' | 'cancel' = turnOn
+    const action: 'start' | 'pause' | 'dock' = turnOn
       ? 'start'
       : (this.platform.config.offCommand ?? 'pause');
 

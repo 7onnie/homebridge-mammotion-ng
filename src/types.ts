@@ -7,7 +7,7 @@ export interface MammotionPlatformConfig {
   pythonPath?: string;
   pollIntervalSeconds?: number;
   deviceFilter?: string[];
-  offCommand?: 'pause' | 'dock' | 'cancel';
+  offCommand?: 'pause' | 'dock';
   enableMatterRvc?: boolean;
   // hybrid additions
   enableStateSensors?: boolean;

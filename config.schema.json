@@ -54,10 +54,6 @@
           {
             "title": "Dock",
             "enum": ["dock"]
-          },
-          {
-            "title": "Cancel",
-            "enum": ["cancel"]
           }
         ]
       },
