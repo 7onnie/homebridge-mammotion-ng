@@ -9,6 +9,15 @@ export interface MammotionPlatformConfig {
   deviceFilter?: string[];
   offCommand?: 'pause' | 'dock' | 'cancel';
   enableMatterRvc?: boolean;
+  // hybrid additions
+  enableStateSensors?: boolean;
+  sensorDocked?: boolean;
+  sensorMowing?: boolean;
+  sensorError?: boolean;
+  errorIncludesOffline?: boolean;
+  sensorDebounceSeconds?: number;
+  offlineGracePolls?: number;
+  enableAbortSwitch?: boolean;
 }
 
 export interface MammotionDeviceInfo {
@@ -41,4 +50,12 @@ export interface MammotionBridgeResponse<T = unknown> {
   ok: boolean;
   data?: T;
   error?: string;
+}
+
+export interface DerivedState {
+  online: boolean;
+  docked: boolean;
+  mowing: boolean;
+  error: boolean;
+  active: boolean; // mowing || returning
 }
