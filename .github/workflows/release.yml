@@ -1,0 +1,82 @@
+name: Release
+
+# Version-bump → release: on every push to main, if package.json's "version"
+# changed versus the previous commit (and no tag exists for it yet), build,
+# test, tag, create a GitHub Release, and publish to npm.
+#
+# Setup required once: add an npm "Automation" access token as the repo secret
+# NPM_TOKEN (Settings → Secrets and variables → Actions). Automation tokens
+# publish even with 2FA enabled on the npm account. Nothing publishes until a
+# version bump is pushed.
+
+on:
+  push:
+    branches: [main]
+    paths: ['package.json']
+
+permissions:
+  contents: write   # create tags + GitHub Releases
+  id-token: write   # npm provenance (OIDC)
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout (full history for version diff + tags)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Node 20 (npm registry)
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Detect version bump
+        id: bump
+        run: |
+          NEW=$(node -p "require('./package.json').version")
+          git show HEAD~1:package.json > /tmp/old-package.json 2>/dev/null || echo '{}' > /tmp/old-package.json
+          OLD=$(node -p "require('/tmp/old-package.json').version || 'none'")
+          echo "new=$NEW" >> "$GITHUB_OUTPUT"
+          echo "old=$OLD" >> "$GITHUB_OUTPUT"
+          if [ "$NEW" != "$OLD" ] && ! git rev-parse "v$NEW" >/dev/null 2>&1; then
+            echo "release=true" >> "$GITHUB_OUTPUT"
+            echo "Version changed: $OLD -> $NEW (will release v$NEW)"
+          else
+            echo "release=false" >> "$GITHUB_OUTPUT"
+            echo "No new version to release (old=$OLD new=$NEW)."
+          fi
+
+      # --ignore-scripts: the package's postinstall bootstraps a Python venv
+      # meant for the end-user's Homebridge host, not for CI.
+      - name: Install dependencies
+        if: steps.bump.outputs.release == 'true'
+        run: npm ci --ignore-scripts
+
+      - name: Build
+        if: steps.bump.outputs.release == 'true'
+        run: npm run build
+
+      - name: Test
+        if: steps.bump.outputs.release == 'true'
+        run: npx vitest run
+
+      - name: Tag + GitHub Release
+        if: steps.bump.outputs.release == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION="v${{ steps.bump.outputs.new }}"
+          git tag "$VERSION"
+          git push origin "$VERSION"
+          gh release create "$VERSION" --title "$VERSION" --generate-notes
+
+      # dist/ is built above and included via package.json "files"; skip lifecycle
+      # scripts so prepublishOnly doesn't rebuild and postinstall never runs here.
+      - name: Publish to npm
+        if: steps.bump.outputs.release == 'true'
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: npm publish --provenance --access public --ignore-scripts

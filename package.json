@@ -8,6 +8,7 @@
   "types": "dist/index.d.ts",
   "files": [
     "dist/**/*",
+    "scripts/**/*",
     "config.schema.json",
     "README.md",
     "LICENSE"
