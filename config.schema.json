@@ -22,8 +22,7 @@
       "pythonPath": {
         "title": "Python path",
         "type": "string",
-        "default": "python3",
-        "description": "Python binary used to run the PyMammotion bridge."
+        "description": "Optional. Leave EMPTY to use the managed Python 3.13 venv. Only set this to override with your own interpreter."
       },
       "areaNameFallbacks": {
         "title": "Area name fallbacks",
@@ -75,6 +74,50 @@
           "type": "string"
         },
         "description": "Optional list of exact device names to expose, e.g. Luba-123456."
+      },
+      "enableStateSensors": {
+        "title": "Expose HomeKit state sensors (for automations)",
+        "type": "boolean",
+        "default": true,
+        "description": "Adds Docked / Mowing / Problem contact sensors you can trigger automations on (Apple Home cannot trigger on the Matter vacuum's state directly)."
+      },
+      "sensorDocked": {
+        "title": "  • Docked / finished sensor",
+        "type": "boolean",
+        "default": true,
+        "condition": { "functionBody": "return model.enableStateSensors !== false;" }
+      },
+      "sensorMowing": {
+        "title": "  • Mowing / active sensor",
+        "type": "boolean",
+        "default": true,
+        "condition": { "functionBody": "return model.enableStateSensors !== false;" }
+      },
+      "sensorError": {
+        "title": "  • Problem / stuck sensor",
+        "type": "boolean",
+        "default": true,
+        "condition": { "functionBody": "return model.enableStateSensors !== false;" }
+      },
+      "errorIncludesOffline": {
+        "title": "Treat 'offline' as a problem",
+        "type": "boolean",
+        "default": true,
+        "condition": { "functionBody": "return model.sensorError !== false;" }
+      },
+      "sensorDebounceSeconds": {
+        "title": "Sensor debounce (seconds)",
+        "type": "integer",
+        "default": 30,
+        "minimum": 0,
+        "maximum": 300,
+        "description": "Minimum time a state must hold before a sensor flips. 0 disables. Problems are reported immediately."
+      },
+      "enableAbortSwitch": {
+        "title": "Expose momentary 'Abort Mowing' switch",
+        "type": "boolean",
+        "default": false,
+        "description": "ENDS the current job and returns the mower to its dock. Auto-resets. Off by default (destructive)."
       }
     }
   }
