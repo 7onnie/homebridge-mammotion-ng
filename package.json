@@ -1,8 +1,8 @@
 {
-  "displayName": "Homebridge Mammotion",
-  "name": "homebridge-mammotion",
-  "version": "0.1.0",
-  "description": "Homebridge plugin for Mammotion mowers (Luba, Yuka) using PyMammotion",
+  "displayName": "Homebridge Mammotion NG",
+  "name": "homebridge-mammotion-ng",
+  "version": "0.2.0",
+  "description": "Hybrid Homebridge plugin for Mammotion mowers (Luba, Yuka): Matter RVC + HomeKit trigger sensors + Abort switch, via PyMammotion",
   "type": "commonjs",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -18,30 +18,36 @@
     "copy:bridge": "mkdir -p dist/python && cp src/python/bridge.py dist/python/bridge.py",
     "watch": "tsc -w",
     "lint": "eslint src --ext .ts",
+    "test": "vitest run",
     "prepare": "npm run build",
-    "prepublishOnly": "npm run build",
-    "test": "echo \"No tests\" && exit 0"
+    "prepublishOnly": "npm run build && vitest run"
   },
   "engines": {
-    "homebridge": ">=1.8.0",
+    "homebridge": ">=2.0.0",
     "node": ">=20.0.0"
   },
   "keywords": [
     "homebridge-plugin",
     "mammotion",
     "luba",
-    "yuka"
+    "yuka",
+    "matter",
+    "rvc",
+    "lawn-mower"
   ],
   "author": "Tom Willmot <tom@willmot.co.uk>",
+  "contributors": [
+    "7onnie"
+  ],
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/willmot/homebridge-mammotion.git"
+    "url": "git+https://github.com/7onnie/homebridge-mammotion-ng.git"
   },
   "bugs": {
-    "url": "https://github.com/willmot/homebridge-mammotion/issues"
+    "url": "https://github.com/7onnie/homebridge-mammotion-ng/issues"
   },
-  "homepage": "https://github.com/willmot/homebridge-mammotion#readme",
+  "homepage": "https://github.com/7onnie/homebridge-mammotion-ng#readme",
   "homebridge": {
     "pluginAlias": "Mammotion",
     "platform": "Mammotion"
@@ -54,6 +60,7 @@
     "eslint": "^9.22.0",
     "homebridge": "^1.11.0",
     "rimraf": "^6.0.1",
-    "typescript": "^5.8.2"
+    "typescript": "^5.8.2",
+    "vitest": "^2.1.9"
   }
 }
