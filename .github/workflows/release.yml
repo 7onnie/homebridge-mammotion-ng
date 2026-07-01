@@ -1,21 +1,17 @@
 name: Release
 
-# Version-bump → release via npm Trusted Publishers (OIDC — no NPM_TOKEN).
-# On every push to main, if package.json's "version" changed versus the
-# previous commit (and no tag exists for it yet), build, test, tag, create a
-# GitHub Release, and publish to npm authenticated by GitHub OIDC.
+# Version-bump → release. On every push to main, if package.json's "version"
+# changed versus the previous commit (and no tag exists for it yet), build,
+# test, tag, create a GitHub Release, and publish to npm.
 #
-# ONE-TIME SETUP on npmjs.com (before the first publish — required, and
-# supported for a brand-new package name):
-#   npmjs.com → your account → Trusted Publishers → Add:
-#     • Package name:     homebridge-mammotion-ng
-#     • Provider:         GitHub Actions
-#     • Owner/Repository: 7onnie/homebridge-mammotion-ng
-#     • Workflow file:    release.yml
-#     • Environment:      (leave blank — this workflow uses none)
-#   (Your npm account must have 2FA enabled to configure this. No token/secret
-#    is stored in GitHub; OIDC authenticates this exact workflow.)
-# Nothing publishes until a version bump is pushed.
+# Auth: the NPM_TOKEN repo secret (an npm Automation/granular publish token).
+# Provenance is still generated via GitHub OIDC (id-token: write) even with
+# token auth. Nothing publishes until a version bump is pushed.
+#
+# (Optional future hardening: npm Trusted Publishers replaces the token with
+#  OIDC — configure it on npmjs.com for package homebridge-mammotion-ng →
+#  repo 7onnie/homebridge-mammotion-ng → workflow release.yml, then drop the
+#  NODE_AUTH_TOKEN line below. No npm Organization is required for that.)
 
 on:
   push:
@@ -24,7 +20,7 @@ on:
 
 permissions:
   contents: write   # create tags + GitHub Releases
-  id-token: write   # OIDC token for npm Trusted Publishers + provenance
+  id-token: write   # provenance attestation via OIDC
 
 jobs:
   release:
@@ -40,10 +36,6 @@ jobs:
         with:
           node-version: '20'
           registry-url: 'https://registry.npmjs.org'
-
-      # Node 20 ships npm 10.x; npm Trusted Publishers OIDC needs >= 11.5.1.
-      - name: Upgrade npm (OIDC trusted publishing support)
-        run: npm install -g npm@latest
 
       - name: Detect version bump
         id: bump
@@ -85,10 +77,10 @@ jobs:
           git push origin "$VERSION"
           gh release create "$VERSION" --title "$VERSION" --generate-notes
 
-      # No NODE_AUTH_TOKEN: OIDC (id-token: write) + the npmjs.com Trusted
-      # Publisher config above authenticate this publish. dist/ is built above
-      # and shipped via package.json "files"; --ignore-scripts skips the
-      # lifecycle rebuild and never runs the end-user postinstall.
-      - name: Publish to npm (Trusted Publishers / OIDC)
+      # dist/ is built above and shipped via package.json "files"; --ignore-scripts
+      # skips the lifecycle rebuild and never runs the end-user postinstall.
+      - name: Publish to npm
         if: steps.bump.outputs.release == 'true'
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: npm publish --provenance --access public --ignore-scripts
