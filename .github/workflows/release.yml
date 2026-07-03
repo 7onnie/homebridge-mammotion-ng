@@ -1,17 +1,14 @@
 name: Release
 
-# Version-bump → release. On every push to main, if package.json's "version"
-# changed versus the previous commit (and no tag exists for it yet), build,
-# test, tag, create a GitHub Release, and publish to npm.
+# Version-bump → release via npm Trusted Publishers (OIDC — no token, no OTP).
+# On every push to main, if package.json's "version" changed versus the
+# previous commit (and no tag exists for it yet), build, test, tag, create a
+# GitHub Release, and publish to npm authenticated by GitHub OIDC.
 #
-# Auth: the NPM_TOKEN repo secret — an npm token with "skip OTP" / Automation
-# enabled (bypasses 2FA in CI). Provenance is still generated via GitHub OIDC
-# (id-token: write). Nothing publishes until a version bump is pushed.
-#
-# (Future: once the package exists on npm you can add a per-package Trusted
-#  Publisher on npmjs.com — provider GitHub Actions, repo
-#  7onnie/homebridge-mammotion-ng, workflow release.yml — and drop the
-#  NODE_AUTH_TOKEN line to go token-less. No npm Organization is needed.)
+# Requires a per-package Trusted Publisher on npmjs.com (already configured):
+#   provider GitHub Actions, repo 7onnie/homebridge-mammotion-ng, workflow
+#   release.yml. Once a Trusted Publisher is set, npm rejects token publishes
+#   for the package, so OIDC is the path. Nothing publishes until a version bump.
 
 on:
   push:
@@ -20,7 +17,7 @@ on:
 
 permissions:
   contents: write   # create tags + GitHub Releases
-  id-token: write   # provenance attestation via OIDC
+  id-token: write   # OIDC token for npm Trusted Publishers + provenance
 
 jobs:
   release:
@@ -36,6 +33,10 @@ jobs:
         with:
           node-version: '20'
           registry-url: 'https://registry.npmjs.org'
+
+      # Node 20 ships npm 10.x; npm Trusted Publishers OIDC needs >= 11.5.1.
+      - name: Upgrade npm (OIDC trusted publishing support)
+        run: npm install -g npm@latest
 
       - name: Detect version bump
         id: bump
@@ -53,7 +54,7 @@ jobs:
             echo "No new version to release (old=$OLD new=$NEW)."
           fi
 
-      # --ignore-scripts: the package's postinstall bootstraps a Python venv for
+      # --ignore-scripts: the package's postinstall provisions a Python venv for
       # the end-user's Homebridge host, which must not run in CI.
       - name: Install dependencies
         if: steps.bump.outputs.release == 'true'
@@ -77,8 +78,8 @@ jobs:
           git push origin "$VERSION"
           gh release create "$VERSION" --title "$VERSION" --generate-notes
 
-      - name: Publish to npm
+      # No NODE_AUTH_TOKEN: OIDC (id-token: write) + the npmjs.com Trusted
+      # Publisher authenticate this publish, and OIDC bypasses 2FA/OTP.
+      - name: Publish to npm (Trusted Publishers / OIDC)
         if: steps.bump.outputs.release == 'true'
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: npm publish --provenance --access public
