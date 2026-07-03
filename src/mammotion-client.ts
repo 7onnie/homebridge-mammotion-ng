@@ -85,6 +85,7 @@ export class MammotionClient extends EventEmitter {
       email: this.config.email,
       password: this.config.password,
       areaNameFallbacks: this.config.areaNameFallbacks ?? {},
+      defaultPlan: this.config.defaultPlan ?? '',
     });
   }
 
@@ -110,6 +111,14 @@ export class MammotionClient extends EventEmitter {
     return this.request<MammotionState>('command', {
       name: deviceName,
       action,
+    });
+  }
+
+  async startPlan(deviceName: string, planId: string): Promise<MammotionState> {
+    return this.request<MammotionState>('command', {
+      name: deviceName,
+      action: 'start_plan',
+      planId,
     });
   }
 

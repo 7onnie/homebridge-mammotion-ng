@@ -10,14 +10,16 @@ import { Debouncer } from './debouncer';
 import { MammotionClient } from './mammotion-client';
 import { MammotionMatterVacuum } from './matter-accessory';
 import { MammotionAbortSwitch } from './abort-switch';
+import { MammotionPlanSwitch } from './plan-switch';
 import { MammotionSensorAccessory, SENSOR_LABEL, type SensorKind } from './sensor-accessory';
 import { PLATFORM_NAME, PLUGIN_NAME } from './settings';
 import { mapState } from './state-mapper';
-import type { DerivedState, MammotionDeviceInfo, MammotionPlatformConfig } from './types';
+import type { DerivedState, MammotionDeviceInfo, MammotionPlan, MammotionPlatformConfig } from './types';
 
 type AccessoryContext = {
   deviceName: string;
-  kind?: 'sensors' | 'abort';
+  kind?: 'sensors' | 'abort' | 'plan';
+  planId?: string;
 };
 
 export class MammotionPlatform implements DynamicPlatformPlugin {
@@ -41,6 +43,9 @@ export class MammotionPlatform implements DynamicPlatformPlugin {
   private readonly matterEnabled: boolean;
   private readonly sensorHandlers = new Map<string, MammotionSensorAccessory[]>();
   private readonly abortHandlers = new Map<string, MammotionAbortSwitch>();
+  private readonly planHandlers = new Map<string, MammotionPlanSwitch[]>();
+  private readonly lastPlanKey = new Map<string, string>();
+  private readonly deviceInfo = new Map<string, MammotionDeviceInfo>();
   private readonly debouncer = new Debouncer();
   private readonly offlineCounts = new Map<string, number>();
   private readonly uuidNamespace: string;
@@ -98,6 +103,7 @@ export class MammotionPlatform implements DynamicPlatformPlugin {
       }
       await this.syncSensors();
       await this.syncAbortSwitch();
+      this.cleanupDisabledPlanSwitches();
       await this.pollOnce();
 
       this.pollTimer = setInterval(() => {
@@ -129,6 +135,7 @@ export class MammotionPlatform implements DynamicPlatformPlugin {
     const liveNames = new Set(devices.map(device => device.name));
 
     for (const device of devices) {
+      this.deviceInfo.set(device.name, device);
       const uuid = this.api.hap.uuid.generate(`${PLUGIN_NAME}:${this.uuidNamespace}:${device.name}`);
       const existing = this.accessories.find(item => item.UUID === uuid);
 
@@ -179,6 +186,7 @@ export class MammotionPlatform implements DynamicPlatformPlugin {
     this.matterHandlers.clear();
 
     for (const device of devices) {
+      this.deviceInfo.set(device.name, device);
       const handler = new MammotionMatterVacuum(
         matter,
         this.log,
@@ -335,7 +343,84 @@ export class MammotionPlatform implements DynamicPlatformPlugin {
           try { sensor.updateState(derived, now); } catch (e) { this.log.debug(`Sensor update failed: ${(e as Error).message}`); }
         }
       }
+
+      if (this.config.enablePlanSwitches === true) {
+        const info = this.deviceInfo.get(state.name);
+        const dName = info ? this.displayNameFor(info) : state.name;
+        try {
+          this.syncPlanSwitches(state.name, dName, state.plans ?? []);
+        } catch (e) {
+          this.log.debug(`Plan switch sync failed: ${(e as Error).message}`);
+        }
+      }
     }
+  }
+
+  // Plan switches are dynamic: driven by the mower's saved plans (from poll),
+  // not device discovery. Re-synced only when the plan set changes, so we don't
+  // churn accessory registration every poll.
+  private syncPlanSwitches(deviceName: string, displayName: string, plans: MammotionPlan[]): void {
+    const key = plans.map(p => `${p.id}:${p.name}`).sort().join('|');
+    if (this.lastPlanKey.get(deviceName) === key) {
+      return;
+    }
+    this.lastPlanKey.set(deviceName, key);
+
+    const liveUuids = new Set<string>();
+    const handlers: MammotionPlanSwitch[] = [];
+    for (const plan of plans) {
+      const uuid = this.api.hap.uuid.generate(`${PLUGIN_NAME}:${this.uuidNamespace}:${deviceName}:planswitch:${plan.id}`);
+      liveUuids.add(uuid);
+      const existing = this.accessories.find(item => item.UUID === uuid);
+      const name = `${displayName} Run ${plan.name}`;
+      const accessory = existing ?? new this.api.platformAccessory<AccessoryContext>(name, uuid);
+      accessory.context.deviceName = deviceName;
+      accessory.context.kind = 'plan';
+      accessory.context.planId = plan.id;
+      accessory.displayName = name;
+      handlers.push(new MammotionPlanSwitch(this, accessory, deviceName, displayName, plan.id, plan.name, this.client));
+      if (existing) {
+        this.api.updatePlatformAccessories([existing]);
+      } else {
+        this.api.registerPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, [accessory]);
+        this.accessories.push(accessory);
+        this.log.info(`Added plan switch '${plan.name}' for ${deviceName}`);
+      }
+    }
+    this.planHandlers.set(deviceName, handlers);
+
+    const stale = this.accessories.filter(
+      item => item.context.kind === 'plan' && item.context.deviceName === deviceName && !liveUuids.has(item.UUID),
+    );
+    if (stale.length > 0) {
+      this.api.unregisterPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, stale);
+      for (const acc of stale) {
+        const index = this.accessories.findIndex(item => item.UUID === acc.UUID);
+        if (index >= 0) {
+          this.accessories.splice(index, 1);
+        }
+      }
+      this.log.info(`Removed ${stale.length} stale plan switch(es) for ${deviceName}`);
+    }
+  }
+
+  // Remove any cached plan switches when the feature is disabled (startup).
+  private cleanupDisabledPlanSwitches(): void {
+    if (this.config.enablePlanSwitches === true) {
+      return;
+    }
+    const stale = this.accessories.filter(item => item.context.kind === 'plan');
+    if (stale.length === 0) {
+      return;
+    }
+    this.api.unregisterPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, stale);
+    for (const acc of stale) {
+      const index = this.accessories.findIndex(item => item.UUID === acc.UUID);
+      if (index >= 0) {
+        this.accessories.splice(index, 1);
+      }
+    }
+    this.log.info(`Removed ${stale.length} plan switch(es) (disabled)`);
   }
 
   private filterDevices(devices: MammotionDeviceInfo[]): MammotionDeviceInfo[] {

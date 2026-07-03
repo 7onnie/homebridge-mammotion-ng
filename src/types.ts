@@ -18,6 +18,11 @@ export interface MammotionPlatformConfig {
   sensorDebounceSeconds?: number;
   offlineGracePolls?: number;
   enableAbortSwitch?: boolean;
+  // Per-plan momentary "Run <plan>" switches (one per saved plan), opt-in.
+  enablePlanSwitches?: boolean;
+  // Name of the saved plan the RVC ▶ Play button runs when several exist.
+  // Falls back to the first plan (name-sorted) when unset or not found.
+  defaultPlan?: string;
   // Optional display-name override per device (keyed by the device id, e.g.
   // "Yuka-MLX9UF6N"). Overrides the auto-derived name for the HomeKit tiles.
   deviceNames?: Record<string, string>;
@@ -36,6 +41,11 @@ export interface MammotionServiceArea {
   name: string;
 }
 
+export interface MammotionPlan {
+  id: string;
+  name: string;
+}
+
 export interface MammotionState {
   name: string;
   online: boolean;
@@ -48,6 +58,7 @@ export interface MammotionState {
   serviceAreas: MammotionServiceArea[];
   selectedAreaIds: number[];
   currentAreaId: number | null;
+  plans?: MammotionPlan[];
 }
 
 export interface MammotionBridgeResponse<T = unknown> {

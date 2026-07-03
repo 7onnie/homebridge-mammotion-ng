@@ -115,6 +115,17 @@
         "default": false,
         "description": "ENDS the current job and returns the mower to its dock. Auto-resets. Off by default (destructive)."
       },
+      "enablePlanSwitches": {
+        "title": "Expose a 'Run <plan>' switch per saved plan",
+        "type": "boolean",
+        "default": false,
+        "description": "Adds one momentary switch per saved mowing plan (e.g. 'Run Daily'). Tapping it starts that specific plan; also works as an automation trigger. Off by default."
+      },
+      "defaultPlan": {
+        "title": "Default plan for the Play button",
+        "type": "string",
+        "description": "When several saved plans exist, the plan the RVC Play button runs. Leave empty to use the first plan (alphabetical). Match the plan/task name from the Mammotion app, e.g. 'Daily'."
+      },
       "deviceNames": {
         "title": "Custom accessory names",
         "type": "object",
