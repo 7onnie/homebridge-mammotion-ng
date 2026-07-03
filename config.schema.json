@@ -114,6 +114,14 @@
         "type": "boolean",
         "default": false,
         "description": "ENDS the current job and returns the mower to its dock. Auto-resets. Off by default (destructive)."
+      },
+      "deviceNames": {
+        "title": "Custom accessory names",
+        "type": "object",
+        "description": "Optional. Override the HomeKit display name per mower, keyed by device id. By default the name is derived automatically (the app nickname if available, otherwise the model with the serial stripped, e.g. 'Yuka'). Example: {\"Yuka-MLX9UF6N\":\"Garden Mower\"}.",
+        "additionalProperties": {
+          "type": "string"
+        }
       }
     }
   }

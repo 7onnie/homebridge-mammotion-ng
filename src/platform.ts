@@ -132,15 +132,16 @@ export class MammotionPlatform implements DynamicPlatformPlugin {
       const uuid = this.api.hap.uuid.generate(`${PLUGIN_NAME}:${this.uuidNamespace}:${device.name}`);
       const existing = this.accessories.find(item => item.UUID === uuid);
 
+      const dName = this.displayNameFor(device);
       if (existing) {
-        existing.displayName = device.name;
+        existing.displayName = dName;
         const handler = new MammotionAccessory(this, existing, device, this.client);
         this.handlers.set(device.name, handler);
         this.api.updatePlatformAccessories([existing]);
         continue;
       }
 
-      const accessory = new this.api.platformAccessory<AccessoryContext>(device.name, uuid);
+      const accessory = new this.api.platformAccessory<AccessoryContext>(dName, uuid);
       const handler = new MammotionAccessory(this, accessory, device, this.client);
       this.handlers.set(device.name, handler);
       this.api.registerPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, [accessory]);
@@ -184,6 +185,7 @@ export class MammotionPlatform implements DynamicPlatformPlugin {
         device,
         this.client,
         this.uuidNamespace,
+        this.displayNameFor(device),
       );
       this.matterHandlers.set(device.name, handler);
       liveUuids.add(handler.uuid);
@@ -225,6 +227,7 @@ export class MammotionPlatform implements DynamicPlatformPlugin {
 
     for (const device of devices) {
       const handlers: MammotionSensorAccessory[] = [];
+      const dName = this.displayNameFor(device);
       for (const { kind, on } of kinds) {
         if (!on) {
           continue;
@@ -232,10 +235,10 @@ export class MammotionPlatform implements DynamicPlatformPlugin {
         const uuid = this.api.hap.uuid.generate(`${PLUGIN_NAME}:${this.uuidNamespace}:${device.name}:sensor:${kind}`);
         liveUuids.add(uuid);
         const existing = this.accessories.find(item => item.UUID === uuid);
-        const accessory = existing ?? new this.api.platformAccessory<AccessoryContext>(`${device.name} ${SENSOR_LABEL[kind]}`, uuid);
+        const accessory = existing ?? new this.api.platformAccessory<AccessoryContext>(`${dName} ${SENSOR_LABEL[kind]}`, uuid);
         accessory.context.deviceName = device.name;
         accessory.context.kind = 'sensors';
-        handlers.push(new MammotionSensorAccessory(this, accessory, device.name, kind, this.debouncer, debounceMs));
+        handlers.push(new MammotionSensorAccessory(this, accessory, device.name, dName, kind, this.debouncer, debounceMs));
         if (existing) {
           this.api.updatePlatformAccessories([existing]);
         } else {
@@ -268,12 +271,13 @@ export class MammotionPlatform implements DynamicPlatformPlugin {
     const liveNames = new Set(devices.map(device => device.name));
 
     for (const device of devices) {
+      const dName = this.displayNameFor(device);
       const uuid = this.api.hap.uuid.generate(`${PLUGIN_NAME}:${this.uuidNamespace}:${device.name}:switch:abort`);
       const existing = this.accessories.find(item => item.UUID === uuid);
-      const accessory = existing ?? new this.api.platformAccessory<AccessoryContext>(`${device.name} Abort`, uuid);
+      const accessory = existing ?? new this.api.platformAccessory<AccessoryContext>(`${dName} Abort`, uuid);
       accessory.context.deviceName = device.name;
       accessory.context.kind = 'abort';
-      const handler = new MammotionAbortSwitch(this, accessory, device.name, this.client);
+      const handler = new MammotionAbortSwitch(this, accessory, device.name, dName, this.client);
       this.abortHandlers.set(device.name, handler);
       if (existing) {
         this.api.updatePlatformAccessories([existing]);
@@ -395,6 +399,22 @@ export class MammotionPlatform implements DynamicPlatformPlugin {
         partId?: string,
       ) => Promise<void>;
     };
+  }
+
+  // Friendly display name for HomeKit tiles. Order: explicit config override,
+  // then the API-provided nickName, then the model with the "-<serial>" stripped
+  // ("Yuka-MLX9UF6N" -> "Yuka"). The internal key stays device.name so UUIDs and
+  // pairing are unaffected.
+  private displayNameFor(device: MammotionDeviceInfo): string {
+    const override = this.config.deviceNames?.[device.name];
+    if (override && override.trim()) {
+      return override.trim();
+    }
+    if (device.nickName && device.nickName.trim()) {
+      return device.nickName.trim();
+    }
+    const stripped = device.name.replace(/-[A-Za-z0-9]{6,}$/, '');
+    return stripped || device.name;
   }
 
   private buildUuidNamespace(): string {

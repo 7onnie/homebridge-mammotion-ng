@@ -39,6 +39,7 @@ export class MammotionMatterVacuum {
     private readonly device: MammotionDeviceInfo,
     private readonly client: MammotionClient,
     uuidSeed: string,
+    displayName: string,
   ) {
     this.state = {
       name: this.device.name,
@@ -59,7 +60,7 @@ export class MammotionMatterVacuum {
 
     this.accessory = {
       UUID: uuid,
-      displayName: device.name,
+      displayName,
       deviceType: matterApi.deviceTypes.RoboticVacuumCleaner,
       serialNumber: serial,
       manufacturer: 'Mammotion',
