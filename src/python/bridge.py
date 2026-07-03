@@ -64,6 +64,7 @@ class Bridge:
         self.mammotion = MammotionClient(ha_version=HA_VERSION)
         self.email: str | None = None
         self.password: str | None = None
+        self.default_plan: str | None = None
         self.area_name_fallbacks: dict[str, list[str]] = {}
         self._area_id_map: dict[str, dict[int, int]] = {}
         self._next_area_refresh_at: dict[str, float] = {}
@@ -103,6 +104,8 @@ class Bridge:
                 if names:
                     parsed_fallbacks[key] = names
         self.area_name_fallbacks = parsed_fallbacks
+        default_plan = str(params.get("defaultPlan", "")).strip()
+        self.default_plan = default_plan or None
         await self.mammotion.login_and_initiate_cloud(email, password)
         return {"ready": True}
 
@@ -138,6 +141,26 @@ class Bridge:
         pid, plan = items[0]
         label = str(getattr(plan, "task_name", "")).strip() or str(getattr(plan, "job_name", "")).strip()
         return (str(getattr(plan, "plan_id", "") or pid), label)
+
+    @staticmethod
+    def _plans_list(state) -> list[dict[str, str]]:
+        """[{id, name}] for each saved plan, de-duplicated by name, name-sorted.
+        Consumed by the Node side to expose one 'Run <plan>' switch per plan."""
+        plans = dict(getattr(getattr(state, "map", None), "plan", {}) or {})
+        out: list[dict[str, str]] = []
+        seen: set[str] = set()
+        for pid, plan in plans.items():
+            plan_id = str(getattr(plan, "plan_id", "") or pid)
+            name = str(getattr(plan, "task_name", "")).strip() or str(getattr(plan, "job_name", "")).strip()
+            if not name or not plan_id:
+                continue
+            key = name.casefold()
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append({"id": plan_id, "name": name})
+        out.sort(key=lambda item: item["name"].casefold())
+        return out
 
     @staticmethod
     def _raw_state(handle: Any) -> Any:
@@ -245,8 +268,11 @@ class Bridge:
                     plan_names.append(task_name or job_name)
 
             fallback_names = self._configured_area_names(device_name)
+            _dev = state.report_data.dev
+            _ss = int(getattr(_dev, "sys_status", 0) or 0)
             self._debug(
-                f"{device_name}: map areas={len(map_areas)} area_names={len(map_area_names)} "
+                f"{device_name}: sys={_ss}({self._mode_name(_ss)}) charge={int(getattr(_dev, 'charge_state', 0) or 0)} "
+                f"map areas={len(map_areas)} area_names={len(map_area_names)} "
                 f"zone_hashs={len(list(getattr(getattr(state, 'work', None), 'zone_hashs', []) or []))} "
                 f"plans={len(map_plans)} plan_names={plan_names} fallback_names={fallback_names}"
             )
@@ -269,6 +295,11 @@ class Bridge:
 
         if action == "start":
             await self._start(name, mode)
+        elif action == "start_plan":
+            plan_id = str(params.get("planId", "")).strip()
+            if not plan_id:
+                raise ValueError("Missing planId for start_plan")
+            await self._start_plan(name, plan_id, mode)
         elif action == "pause":
             await self._pause(name, mode)
         elif action == "dock":
@@ -297,13 +328,23 @@ class Bridge:
         if mode == WorkMode.MODE_RETURNING:
             await self._send_command(name, "cancel_return_to_dock")
         plan_state = self._raw_state(self._handle_by_name(name))
-        plan_id, _label = self._resolve_plan_id(plan_state)
+        plan_id, _label = self._resolve_plan_id(plan_state, prefer_name=self.default_plan)
         if plan_id:
             await self._send_command(name, "single_schedule", plan_id=plan_id)
             return
-        # Fallback when no stored plan exists.
-        await self._send_command(name, "query_generate_route_information")
-        await self._send_command(name, "start_job")
+        # No saved plan: query_generate_route_information + start_job only starts a
+        # degenerate empty task (live-verified 2026-07-04 — instant "100%" completion,
+        # never enters MODE_WORKING), so surface a clear message instead of twitching
+        # the mower out and back.
+        raise ValueError(
+            f"No saved plan for {name}. Create a mowing task in the Mammotion app first."
+        )
+
+    async def _start_plan(self, name: str, plan_id: str, mode: int | None) -> None:
+        """Run one specific saved plan (backs the per-plan 'Run <plan>' switches)."""
+        if mode == WorkMode.MODE_RETURNING:
+            await self._send_command(name, "cancel_return_to_dock")
+        await self._send_command(name, "single_schedule", plan_id=plan_id)
 
     async def _pause(self, name: str, mode: int | None) -> None:
         if mode == WorkMode.MODE_WORKING:
@@ -384,6 +425,7 @@ class Bridge:
             "serviceAreas": service_areas,
             "selectedAreaIds": selected_areas,
             "currentAreaId": current_area,
+            "plans": self._plans_list(state),
         }
 
     def _service_area_state(self, device_name: str, state: Any) -> tuple[list[dict[str, Any]], list[int], int | None]:
