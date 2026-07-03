@@ -10,7 +10,7 @@ import { Debouncer } from './debouncer';
 import { MammotionClient } from './mammotion-client';
 import { MammotionMatterVacuum } from './matter-accessory';
 import { MammotionAbortSwitch } from './abort-switch';
-import { MammotionSensorAccessory } from './sensor-accessory';
+import { MammotionSensorAccessory, SENSOR_LABEL, type SensorKind } from './sensor-accessory';
 import { PLATFORM_NAME, PLUGIN_NAME } from './settings';
 import { mapState } from './state-mapper';
 import type { DerivedState, MammotionDeviceInfo, MammotionPlatformConfig } from './types';
@@ -39,7 +39,7 @@ export class MammotionPlatform implements DynamicPlatformPlugin {
   private started = false;
   private readonly client: MammotionClient;
   private readonly matterEnabled: boolean;
-  private readonly sensorHandlers = new Map<string, MammotionSensorAccessory>();
+  private readonly sensorHandlers = new Map<string, MammotionSensorAccessory[]>();
   private readonly abortHandlers = new Map<string, MammotionAbortSwitch>();
   private readonly debouncer = new Debouncer();
   private readonly offlineCounts = new Map<string, number>();
@@ -212,39 +212,47 @@ export class MammotionPlatform implements DynamicPlatformPlugin {
   private async syncSensors(): Promise<void> {
     const enabled = this.config.enableStateSensors !== false;
     const devices = enabled ? this.filterDevices(await this.client.discoverDevices()) : [];
-    const liveSensorNames = new Set(devices.map(device => device.name));
-    const enable = {
-      docked: this.config.sensorDocked !== false,
-      mowing: this.config.sensorMowing !== false,
-      error: this.config.sensorError !== false,
-    };
     const debounceMs = Math.max(0, (this.config.sensorDebounceSeconds ?? 30) * 1000);
+    const kinds: Array<{ kind: SensorKind; on: boolean }> = [
+      { kind: 'docked', on: this.config.sensorDocked !== false },
+      { kind: 'mowing', on: this.config.sensorMowing !== false },
+      { kind: 'error', on: this.config.sensorError !== false },
+    ];
+
+    // One accessory per sensor kind (distinct names in Apple Home).
+    const liveUuids = new Set<string>();
+    this.sensorHandlers.clear();
 
     for (const device of devices) {
-      const uuid = this.api.hap.uuid.generate(`${PLUGIN_NAME}:${this.uuidNamespace}:${device.name}:sensors`);
-      const existing = this.accessories.find(item => item.UUID === uuid);
-      const accessory = existing ?? new this.api.platformAccessory<AccessoryContext>(`${device.name} Sensors`, uuid);
-      accessory.context.deviceName = device.name;
-      accessory.context.kind = 'sensors';
-      const handler = new MammotionSensorAccessory(this, accessory, device.name, this.debouncer, debounceMs, enable);
-      this.sensorHandlers.set(device.name, handler);
-      if (existing) {
-        this.api.updatePlatformAccessories([existing]);
-      } else {
-        this.api.registerPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, [accessory]);
-        this.accessories.push(accessory);
-        this.log.info(`Added state sensors for ${device.name}`);
+      const handlers: MammotionSensorAccessory[] = [];
+      for (const { kind, on } of kinds) {
+        if (!on) {
+          continue;
+        }
+        const uuid = this.api.hap.uuid.generate(`${PLUGIN_NAME}:${this.uuidNamespace}:${device.name}:sensor:${kind}`);
+        liveUuids.add(uuid);
+        const existing = this.accessories.find(item => item.UUID === uuid);
+        const accessory = existing ?? new this.api.platformAccessory<AccessoryContext>(`${device.name} ${SENSOR_LABEL[kind]}`, uuid);
+        accessory.context.deviceName = device.name;
+        accessory.context.kind = 'sensors';
+        handlers.push(new MammotionSensorAccessory(this, accessory, device.name, kind, this.debouncer, debounceMs));
+        if (existing) {
+          this.api.updatePlatformAccessories([existing]);
+        } else {
+          this.api.registerPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, [accessory]);
+          this.accessories.push(accessory);
+          this.log.info(`Added ${SENSOR_LABEL[kind]} sensor for ${device.name}`);
+        }
       }
+      this.sensorHandlers.set(device.name, handlers);
     }
 
-    // Remove sensor accessories for devices no longer live (or all, when sensors are disabled).
-    const stale = this.accessories.filter(
-      item => item.context.kind === 'sensors' && !liveSensorNames.has(item.context.deviceName),
-    );
+    // Remove sensor accessories no longer live: device dropped, sensors
+    // disabled, a kind turned off, or the old combined ":sensors" accessory.
+    const stale = this.accessories.filter(item => item.context.kind === 'sensors' && !liveUuids.has(item.UUID));
     if (stale.length > 0) {
       this.api.unregisterPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, stale);
       for (const acc of stale) {
-        this.sensorHandlers.delete(acc.context.deviceName);
         const index = this.accessories.findIndex(item => item.UUID === acc.UUID);
         if (index >= 0) {
           this.accessories.splice(index, 1);
@@ -317,7 +325,9 @@ export class MammotionPlatform implements DynamicPlatformPlugin {
       }
       const sensors = this.sensorHandlers.get(state.name);
       if (sensors) {
-        try { sensors.updateState(derived, now); } catch (e) { this.log.debug(`Sensor update failed: ${(e as Error).message}`); }
+        for (const sensor of sensors) {
+          try { sensor.updateState(derived, now); } catch (e) { this.log.debug(`Sensor update failed: ${(e as Error).message}`); }
+        }
       }
     }
   }

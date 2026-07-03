@@ -6,75 +6,74 @@ import type { DerivedState } from './types';
 export const CONTACT_DETECTED = 1;      // HAP ContactSensorState.CONTACT_DETECTED
 export const CONTACT_NOT_DETECTED = 0;  // HAP ContactSensorState.CONTACT_NOT_DETECTED
 
-export interface SensorCfg { debounceMs: number; key: string }
+export type SensorKind = 'docked' | 'mowing' | 'error';
 
-/** Pure: derive the three contact-sensor values, applying debounce + sticky error. */
-export function sensorContactValues(
+export const SENSOR_LABEL: Record<SensorKind, string> = {
+  docked: 'Docked',
+  mowing: 'Mowing',
+  error: 'Problem',
+};
+
+/**
+ * Pure: the debounced contact value for one sensor kind.
+ * Docked/Mowing use the configured dwell both ways; Error rises immediately
+ * (dwell 0) and falls sticky (full dwell), so a single-poll fault still stays
+ * visible long enough to fire a HomeKit automation.
+ */
+export function contactValue(
+  kind: SensorKind,
   d: DerivedState,
   deb: Debouncer,
-  cfg: SensorCfg,
+  debounceMs: number,
+  key: string,
   now: number,
-): { docked: number; mowing: number; error: number } {
-  const docked = deb.push(`${cfg.key}:docked`, d.docked, cfg.debounceMs, now);
-  const mowing = deb.push(`${cfg.key}:mowing`, d.mowing, cfg.debounceMs, now);
-  // error rises immediately (dwell 0), falls sticky (full debounce)
-  const errDwell = d.error ? 0 : cfg.debounceMs;
-  const error = deb.push(`${cfg.key}:error`, d.error, errDwell, now);
-  return {
-    docked: docked ? CONTACT_DETECTED : CONTACT_NOT_DETECTED,
-    mowing: mowing ? CONTACT_DETECTED : CONTACT_NOT_DETECTED,
-    error: error ? CONTACT_DETECTED : CONTACT_NOT_DETECTED,
-  };
+): number {
+  const raw = kind === 'docked' ? d.docked : kind === 'mowing' ? d.mowing : d.error;
+  const dwell = kind === 'error' && raw ? 0 : debounceMs;
+  const committed = deb.push(`${key}:${kind}`, raw, dwell, now);
+  return committed ? CONTACT_DETECTED : CONTACT_NOT_DETECTED;
 }
 
 type Ctx = { deviceName: string };
 
+// One ContactSensor per accessory. Apple Home shows generic/identical names
+// for multiple same-type services on a single accessory, so each sensor is its
+// own PlatformAccessory with a distinct name the Home app displays reliably.
 export class MammotionSensorAccessory {
-  private readonly docked?: Service;
-  private readonly mowing?: Service;
-  private readonly error?: Service;
+  private readonly service: Service;
 
   constructor(
     private readonly platform: MammotionPlatform,
     accessory: PlatformAccessory<Ctx>,
     private readonly deviceName: string,
+    private readonly kind: SensorKind,
     private readonly deb: Debouncer,
     private readonly debounceMs: number,
-    enable: { docked: boolean; mowing: boolean; error: boolean },
   ) {
     accessory.context.deviceName = deviceName;
     const C = this.platform.Characteristic;
     const S = this.platform.Service;
+    const displayName = `${deviceName} ${SENSOR_LABEL[kind]}`;
 
     const info = accessory.getService(S.AccessoryInformation) ?? accessory.addService(S.AccessoryInformation);
-    info.setCharacteristic(C.Manufacturer, 'Mammotion').setCharacteristic(C.Model, 'Mower Sensors')
-      .setCharacteristic(C.SerialNumber, `${deviceName}-sensors`);
+    info.setCharacteristic(C.Manufacturer, 'Mammotion')
+      .setCharacteristic(C.Model, `Mower ${SENSOR_LABEL[kind]} Sensor`)
+      .setCharacteristic(C.SerialNumber, `${deviceName}-${kind}`);
 
-    const mk = (subtype: string, name: string): Service =>
-      accessory.getServiceById(S.ContactSensor, subtype)
-        ?? accessory.addService(S.ContactSensor, name, subtype);
-
-    if (enable.docked) { this.docked = mk('docked', `${deviceName} Docked`); }
-    if (enable.mowing) { this.mowing = mk('mowing', `${deviceName} Mowing`); }
-    if (enable.error)  { this.error  = mk('error',  `${deviceName} Problem`); }
+    this.service = accessory.getService(S.ContactSensor) ?? accessory.addService(S.ContactSensor, displayName);
+    this.service.setCharacteristic(C.Name, displayName);
   }
 
   get deviceNameKey(): string { return this.deviceName; }
 
   updateState(d: DerivedState, now: number): void {
     const C = this.platform.Characteristic;
-    const v = sensorContactValues(d, this.deb, { debounceMs: this.debounceMs, key: this.deviceName }, now);
-    const apply = (svc: Service | undefined, contact: number) => {
-      if (!svc) { return; }
-      svc.updateCharacteristic(C.ContactSensorState, contact);
-      svc.updateCharacteristic(C.StatusActive, d.online);
-      svc.updateCharacteristic(
-        C.StatusFault,
-        d.error ? C.StatusFault.GENERAL_FAULT : C.StatusFault.NO_FAULT,
-      );
-    };
-    apply(this.docked, v.docked);
-    apply(this.mowing, v.mowing);
-    apply(this.error, v.error);
+    const contact = contactValue(this.kind, d, this.deb, this.debounceMs, this.deviceName, now);
+    this.service.updateCharacteristic(C.ContactSensorState, contact);
+    this.service.updateCharacteristic(C.StatusActive, d.online);
+    this.service.updateCharacteristic(
+      C.StatusFault,
+      d.error ? C.StatusFault.GENERAL_FAULT : C.StatusFault.NO_FAULT,
+    );
   }
 }
