@@ -12,6 +12,7 @@ export class MammotionAbortSwitch {
     private readonly platform: MammotionPlatform,
     accessory: PlatformAccessory<Ctx>,
     private readonly deviceName: string,
+    displayName: string,
     private readonly client: MammotionClient,
   ) {
     accessory.context.deviceName = deviceName;
@@ -21,7 +22,7 @@ export class MammotionAbortSwitch {
     info.setCharacteristic(C.Manufacturer, 'Mammotion').setCharacteristic(C.Model, 'Abort')
       .setCharacteristic(C.SerialNumber, `${deviceName}-abort`);
 
-    this.service = accessory.getService(S.Switch) ?? accessory.addService(S.Switch, `${deviceName} Abort Mowing`);
+    this.service = accessory.getService(S.Switch) ?? accessory.addService(S.Switch, `${displayName} Abort Mowing`);
     this.service.getCharacteristic(C.On).onGet(() => false).onSet(this.onSet.bind(this));
     this.service.updateCharacteristic(C.On, false);
   }

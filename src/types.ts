@@ -18,6 +18,9 @@ export interface MammotionPlatformConfig {
   sensorDebounceSeconds?: number;
   offlineGracePolls?: number;
   enableAbortSwitch?: boolean;
+  // Optional display-name override per device (keyed by the device id, e.g.
+  // "Yuka-MLX9UF6N"). Overrides the auto-derived name for the HomeKit tiles.
+  deviceNames?: Record<string, string>;
 }
 
 export interface MammotionDeviceInfo {
@@ -25,6 +28,7 @@ export interface MammotionDeviceInfo {
   iotId: string;
   model?: string;
   serialNumber?: string;
+  nickName?: string;
 }
 
 export interface MammotionServiceArea {

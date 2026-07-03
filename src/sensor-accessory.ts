@@ -46,6 +46,7 @@ export class MammotionSensorAccessory {
     private readonly platform: MammotionPlatform,
     accessory: PlatformAccessory<Ctx>,
     private readonly deviceName: string,
+    displayName: string,
     private readonly kind: SensorKind,
     private readonly deb: Debouncer,
     private readonly debounceMs: number,
@@ -53,15 +54,15 @@ export class MammotionSensorAccessory {
     accessory.context.deviceName = deviceName;
     const C = this.platform.Characteristic;
     const S = this.platform.Service;
-    const displayName = `${deviceName} ${SENSOR_LABEL[kind]}`;
+    const label = `${displayName} ${SENSOR_LABEL[kind]}`;
 
     const info = accessory.getService(S.AccessoryInformation) ?? accessory.addService(S.AccessoryInformation);
     info.setCharacteristic(C.Manufacturer, 'Mammotion')
       .setCharacteristic(C.Model, `Mower ${SENSOR_LABEL[kind]} Sensor`)
       .setCharacteristic(C.SerialNumber, `${deviceName}-${kind}`);
 
-    this.service = accessory.getService(S.ContactSensor) ?? accessory.addService(S.ContactSensor, displayName);
-    this.service.setCharacteristic(C.Name, displayName);
+    this.service = accessory.getService(S.ContactSensor) ?? accessory.addService(S.ContactSensor, label);
+    this.service.setCharacteristic(C.Name, label);
   }
 
   get deviceNameKey(): string { return this.deviceName; }

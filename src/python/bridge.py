@@ -155,6 +155,7 @@ class Bridge:
             return bool(getattr(handle.snapshot.raw, "online", False))
 
     async def _list_devices(self) -> list[dict[str, Any]]:
+        nick_by_name = self._nick_names()
         devices = []
         for handle in self._handles():
             name = handle.device_name
@@ -167,11 +168,25 @@ class Bridge:
                     "iotId": handle.iot_id,
                     "model": model,
                     "serialNumber": serial,
+                    "nickName": nick_by_name.get(name),
                 }
             )
 
         devices.sort(key=lambda item: item["name"])
         return devices
+
+    def _nick_names(self) -> dict[str, str]:
+        """Map device_name -> user-assigned nickName from the cloud device
+        lists. Populated only for accounts that expose one (e.g. the Aliyun
+        binding); empty on the Mammotion-direct path."""
+        nicks: dict[str, str] = {}
+        for attr in ("aliyun_device_list", "mammotion_device_list"):
+            for dev in (getattr(self.mammotion, attr, None) or []):
+                device_name = getattr(dev, "device_name", None)
+                nick = getattr(dev, "nick_name", None)
+                if device_name and nick and device_name not in nicks:
+                    nicks[device_name] = str(nick)
+        return nicks
 
     async def _poll(self) -> list[dict[str, Any]]:
         states = []
