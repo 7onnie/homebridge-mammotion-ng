@@ -238,6 +238,7 @@ export class MammotionPlatform implements DynamicPlatformPlugin {
         const accessory = existing ?? new this.api.platformAccessory<AccessoryContext>(`${dName} ${SENSOR_LABEL[kind]}`, uuid);
         accessory.context.deviceName = device.name;
         accessory.context.kind = 'sensors';
+        accessory.displayName = `${dName} ${SENSOR_LABEL[kind]}`;
         handlers.push(new MammotionSensorAccessory(this, accessory, device.name, dName, kind, this.debouncer, debounceMs));
         if (existing) {
           this.api.updatePlatformAccessories([existing]);
@@ -277,6 +278,7 @@ export class MammotionPlatform implements DynamicPlatformPlugin {
       const accessory = existing ?? new this.api.platformAccessory<AccessoryContext>(`${dName} Abort`, uuid);
       accessory.context.deviceName = device.name;
       accessory.context.kind = 'abort';
+      accessory.displayName = `${dName} Abort`;
       const handler = new MammotionAbortSwitch(this, accessory, device.name, dName, this.client);
       this.abortHandlers.set(device.name, handler);
       if (existing) {

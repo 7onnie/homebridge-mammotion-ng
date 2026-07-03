@@ -1,7 +1,7 @@
 {
   "displayName": "Homebridge Mammotion NG",
   "name": "homebridge-mammotion-ng",
-  "version": "0.3.5",
+  "version": "0.3.6",
   "description": "Hybrid Homebridge plugin for Mammotion mowers (Luba, Yuka): Matter RVC + HomeKit trigger sensors + Abort switch, via PyMammotion",
   "type": "commonjs",
   "main": "dist/index.js",
