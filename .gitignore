@@ -3,4 +3,5 @@ dist/
 .DS_Store
 .venv/
 .python-bridge-venv/
+.python-standalone/
 *.tgz

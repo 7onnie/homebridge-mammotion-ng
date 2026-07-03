@@ -1,12 +1,10 @@
 import { spawn } from 'node:child_process';
-import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 
 import type { Logger } from 'homebridge';
 
 const REQUIRED_MAJOR = 3;
-const REQUIRED_MINOR = 10;
-const PYMAMMOTION_SPEC = 'pymammotion==0.5.75';
+const REQUIRED_MINOR = 13;
 
 export type PythonProbe = {
   available: boolean;
@@ -74,6 +72,9 @@ export async function probePython(pythonPath: string): Promise<PythonProbe> {
   }
 }
 
+// Runtime bootstrap. Delegates to scripts/bootstrap-python.js (the single
+// provisioning implementation, shared with the install-time postinstall):
+// it finds or downloads a standalone Python 3.13 and builds the managed venv.
 export async function bootstrapManagedPython(log: Logger): Promise<string> {
   const managedPython = managedVenvPythonPath();
   const existingProbe = await probePython(managedPython);
@@ -81,70 +82,21 @@ export async function bootstrapManagedPython(log: Logger): Promise<string> {
     return managedPython;
   }
 
-  const candidates = uniqueStrings([
-    process.env.PYTHON,
-    // PATH-based lookups
-    'python3.13',
-    'python3.12',
-    'python3.11',
-    'python3.10',
-    'python3',
-    'python',
-    // Common macOS absolute locations
-    '/opt/homebrew/bin/python3.13',
-    '/opt/homebrew/bin/python3.14',
-    '/opt/homebrew/bin/python3.12',
-    '/opt/homebrew/bin/python3.11',
-    '/opt/homebrew/bin/python3.10',
-    '/usr/local/bin/python3.13',
-    '/usr/local/bin/python3.14',
-    '/usr/local/bin/python3.12',
-    '/usr/local/bin/python3.11',
-    '/usr/local/bin/python3.10',
-    '/Library/Frameworks/Python.framework/Versions/3.14/bin/python3',
-    '/Library/Frameworks/Python.framework/Versions/3.13/bin/python3',
-    '/Library/Frameworks/Python.framework/Versions/3.12/bin/python3',
-    '/Library/Frameworks/Python.framework/Versions/3.11/bin/python3',
-    '/Library/Frameworks/Python.framework/Versions/3.10/bin/python3',
-  ]);
-
-  let selectedPython: string | null = null;
-  const failures: string[] = [];
-  for (const candidate of candidates) {
-    const probe = await probePython(candidate);
-    if (probe.available && versionIsSupported(probe)) {
-      selectedPython = candidate;
-      break;
-    }
-    failures.push(`${candidate}: ${probe.error ?? 'not available'}`);
+  log.info('Preparing the managed Python 3.13 runtime for the Mammotion bridge (first run may download Python and take a few minutes).');
+  const script = join(__dirname, '..', 'scripts', 'bootstrap-python.js');
+  const result = await runCommand(process.execPath, [script]);
+  if (result.code !== 0) {
+    throw new Error(`Python bootstrap failed: ${(result.stderr || result.stdout).trim() || 'unknown error'}`);
   }
-
-  if (!selectedPython) {
-    throw new Error(
-      [
-        'No compatible Python 3.10+ interpreter found to bootstrap managed PyMammotion runtime.',
-        `Candidates checked: ${candidates.join(', ')}`,
-        `Probe failures: ${failures.join(' | ')}`,
-      ].join(' '),
-    );
-  }
-
-  const venvDir = managedVenvDir();
-  if (!existsSync(managedPython)) {
-    log.info(`Creating managed Python environment at ${venvDir}`);
-    await ensureSuccess(await runCommand(selectedPython, ['-m', 'venv', venvDir]), 'python -m venv');
-  }
-
-  log.info('Installing PyMammotion into managed environment (first run may take a minute).');
-  await ensureSuccess(await runCommand(managedPython, ['-m', 'pip', 'install', '--upgrade', 'pip']), 'pip upgrade');
-  await ensureSuccess(
-    await runCommand(managedPython, ['-m', 'pip', 'install', '--upgrade', PYMAMMOTION_SPEC]),
-    `pip install ${PYMAMMOTION_SPEC}`,
-  );
 
   const finalProbe = await probePython(managedPython);
   if (!finalProbe.available || !finalProbe.hasPyMammotion) {
-    throw new Error('Managed Python bootstrap completed but pymammotion import still failed.');
+    throw new Error(
+      [
+        `Managed Python bootstrap ran but pymammotion is still unavailable at ${managedPython}.`,
+        `Bootstrap output: ${(result.stdout || result.stderr).trim() || '(none)'}`,
+      ].join(' '),
+    );
   }
 
   return managedPython;
@@ -186,29 +138,4 @@ async function runCommand(command: string, args: string[]): Promise<CommandResul
       });
     });
   });
-}
-
-async function ensureSuccess(result: CommandResult, step: string): Promise<void> {
-  if (result.code === 0) {
-    return;
-  }
-
-  const errorOutput = (result.stderr || result.stdout).trim();
-  throw new Error(`${step} failed: ${errorOutput || 'unknown error'}`);
-}
-
-function uniqueStrings(values: Array<string | undefined>): string[] {
-  const seen = new Set<string>();
-  const out: string[] = [];
-  for (const value of values) {
-    if (!value) {
-      continue;
-    }
-    if (seen.has(value)) {
-      continue;
-    }
-    seen.add(value);
-    out.push(value);
-  }
-  return out;
 }
