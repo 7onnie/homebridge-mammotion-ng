@@ -6,6 +6,10 @@ export interface MammotionPlatformConfig {
   areaNameFallbacks?: Record<string, string[]>;
   pythonPath?: string;
   pollIntervalSeconds?: number;
+  // Cloud one-shot poll cadence (seconds) driving pymammotion's mqtt_activity_loop.
+  // Lower = faster detection of externally-started mows, but more cloud traffic
+  // (rate-limit risk on firmware < 1.30.25.1). Default 120.
+  cloudRefreshSeconds?: number;
   deviceFilter?: string[];
   offCommand?: 'pause' | 'dock';
   enableMatterRvc?: boolean;

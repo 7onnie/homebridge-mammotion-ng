@@ -49,11 +49,20 @@ export class MammotionClient extends EventEmitter {
     await this.verifyPythonEnvironment();
 
     const bridgePath = join(__dirname, 'python', 'bridge.py');
+    // Tune pymammotion's built-in mqtt_activity_loop cadence (read from these env
+    // vars at import time, per device mode) so an externally-started mow is
+    // detected within ~cloudRefreshSeconds instead of the library default
+    // (15-60 min). The loop is rate-limit-aware and backs off on cloud 429s.
+    const cloudSecs = String(Math.max(15, this.config.cloudRefreshSeconds ?? 120));
     this.process = spawn(this.pythonPath, [bridgePath], {
       stdio: 'pipe',
       env: {
         ...process.env,
         PYTHONUNBUFFERED: '1',
+        MAMMOTION_POLL_ACTIVE_SECS: cloudSecs,
+        MAMMOTION_POLL_DOCKED_CHARGING_SECS: cloudSecs,
+        MAMMOTION_POLL_DOCKED_FULL_SECS: cloudSecs,
+        MAMMOTION_POLL_IDLE_SECS: cloudSecs,
       },
     });
 

@@ -42,6 +42,14 @@
         "minimum": 5,
         "maximum": 120
       },
+      "cloudRefreshSeconds": {
+        "title": "Cloud refresh cadence (seconds)",
+        "type": "integer",
+        "default": 120,
+        "minimum": 15,
+        "maximum": 3600,
+        "description": "How often the plugin refreshes the mower state from the Mammotion cloud (drives how fast an externally-started mow is detected). Lower = faster, but more cloud traffic. Firmware below 1.30.25.1 is rate-limited — keep this at ~120s or higher; on 1.30.25.1+ you can go as low as 30s."
+      },
       "offCommand": {
         "title": "Off command",
         "type": "string",
