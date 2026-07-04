@@ -41,7 +41,6 @@ from typing import Any
 
 from pymammotion.client import MammotionClient
 from pymammotion.const import APP_VERSION
-from pymammotion.proto import RptAct, RptInfoType
 from pymammotion.utility.constant.device_constant import WorkMode, device_mode
 
 # pymammotion issue #137 App-Version gate.
@@ -217,11 +216,12 @@ class Bridge:
         for handle in self._handles():
             device_name = handle.device_name
             state = self._raw_state(handle)
-            # Best effort state refresh from the mower before we read cached state.
-            try:
-                await self._request_iot_sync(device_name)
-            except Exception:
-                pass
+            # handle.snapshot is a LIVE view; freshness is driven by pymammotion's
+            # own mqtt_activity_loop (cadence tuned via MAMMOTION_POLL_*_SECS env
+            # vars, set by the Node side). We just read the live snapshot here.
+            # The old per-poll RPT_START/count=0 request was a BLE-only continuous
+            # stream and a no-op over cloud MQTT — it never fetched a report, which
+            # is what caused externally-started mows to take ~15 min to appear.
 
             map_area_names = list(getattr(state.map, "area_name", []) or [])
             map_areas = dict(getattr(state.map, "area", {}) or {})
@@ -383,23 +383,13 @@ class Bridge:
         return partial
 
     async def _request_iot_sync(self, name: str) -> None:
-        await self._send_command(
-            name,
-            "request_iot_sys",
-            rpt_act=RptAct.RPT_START,
-            rpt_info_type=[
-                RptInfoType.RIT_DEV_STA,
-                RptInfoType.RIT_DEV_LOCAL,
-                RptInfoType.RIT_WORK,
-                RptInfoType.RIT_MAINTAIN,
-                RptInfoType.RIT_BASESTATION_INFO,
-                RptInfoType.RIT_VIO,
-            ],
-            timeout=10000,
-            period=3000,
-            no_change_period=4000,
-            count=0,
-        )
+        # One-shot count=1 report via pymammotion's own helper. The old
+        # RptAct.RPT_START/count=0 was a BLE-only continuous stream and a no-op
+        # over cloud MQTT (it never produced a report). request_report_snapshot
+        # fires the correct count=1 poll (fire-and-forget: the report lands
+        # asynchronously and updates the live snapshot). Used after user commands
+        # to nudge a fresh reading; steady-state cadence is the mqtt_activity_loop.
+        await self.mammotion.request_report_snapshot(name)
 
     def _to_state(self, device_name: str, handle: Any) -> dict[str, Any]:
         state = self._raw_state(handle)
