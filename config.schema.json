@@ -71,6 +71,13 @@
         "default": true,
         "description": "Use Matter Robotic Vacuum Cleaner accessory when Matter is available and enabled in Homebridge; otherwise fallback to HomeKit switch."
       },
+      "exposeBattery": {
+        "title": "Show battery on the Matter vacuum",
+        "type": "boolean",
+        "default": true,
+        "description": "Reports battery % + charging state on the Matter Robotic Vacuum tile (Power Source cluster). No extra tile.",
+        "condition": { "functionBody": "return model.enableMatterRvc !== false;" }
+      },
       "deviceFilter": {
         "title": "Device filter",
         "type": "array",
@@ -86,9 +93,10 @@
         "description": "Adds Docked / Mowing / Problem contact sensors you can trigger automations on (Apple Home cannot trigger on the Matter vacuum's state directly)."
       },
       "sensorDocked": {
-        "title": "  • Docked / finished sensor",
+        "title": "  • Undocked sensor (docked = closed)",
         "type": "boolean",
         "default": true,
+        "description": "Contact sensor named 'Undocked'. CLOSED while docked (Angedockt = geschlossen — no warning ~90% of the time), OPEN when away/mowing. Trigger on 'closes' = re-docked.",
         "condition": { "functionBody": "return model.enableStateSensors !== false;" }
       },
       "sensorMowing": {
@@ -103,10 +111,31 @@
         "default": true,
         "condition": { "functionBody": "return model.enableStateSensors !== false;" }
       },
+      "sensorBladeWear": {
+        "title": "  • Blade Service sensor (blade wear)",
+        "type": "boolean",
+        "default": false,
+        "description": "Contact sensor that OPENS when blade usage reaches the mower's warning threshold. Off by default.",
+        "condition": { "functionBody": "return model.enableStateSensors !== false;" }
+      },
+      "sensorProgress": {
+        "title": "  • Mow progress sensor (%)",
+        "type": "boolean",
+        "default": false,
+        "description": "Mow completion % as a humidity sensor (Apple Home shows it as 'Humidity' — rename the tile). Off by default.",
+        "condition": { "functionBody": "return model.enableStateSensors !== false;" }
+      },
       "errorIncludesOffline": {
         "title": "Treat 'offline' as a problem",
         "type": "boolean",
         "default": true,
+        "condition": { "functionBody": "return model.sensorError !== false;" }
+      },
+      "errorIncludesSensorFaults": {
+        "title": "Treat bumper/ultrasonic faults as a problem",
+        "type": "boolean",
+        "default": false,
+        "description": "Also open the Problem sensor when a bumper or ultrasonic sensor reports ERROR (e.g. stuck on an obstacle).",
         "condition": { "functionBody": "return model.sensorError !== false;" }
       },
       "sensorDebounceSeconds": {
@@ -133,6 +162,13 @@
         "title": "Default plan for the Play button",
         "type": "string",
         "description": "When several saved plans exist, the plan the RVC Play button runs. Leave empty to use the first plan (alphabetical). Match the plan/task name from the Mammotion app, e.g. 'Daily'."
+      },
+      "enableEveHistory": {
+        "title": "Eve history on the contact sensors",
+        "type": "boolean",
+        "default": true,
+        "description": "Logs open/close history (Undocked / Mowing / Problem / Blade) for graphing in the Eve app. Apple Home ignores it. On by default.",
+        "condition": { "functionBody": "return model.enableStateSensors !== false;" }
       },
       "deviceNames": {
         "title": "Custom accessory names",

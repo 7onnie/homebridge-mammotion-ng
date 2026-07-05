@@ -15,7 +15,7 @@ const ERROR_MODES = new Set<number>([MODE_LOCK, MODE_OTA_UPGRADE_FAIL, MODE_LOCA
 
 export function mapState(
   state: MammotionState,
-  opts: { offlineConfirmed: boolean; errorIncludesOffline: boolean },
+  opts: { offlineConfirmed: boolean; errorIncludesOffline: boolean; errorIncludesSensorFaults?: boolean },
 ): DerivedState {
   const online = Boolean(state.online);
   const sys = Number(state.sysStatus ?? 0);
@@ -27,7 +27,8 @@ export function mapState(
   const error =
     Boolean(state.hasError) ||
     ERROR_MODES.has(sys) ||
-    (opts.errorIncludesOffline && opts.offlineConfirmed);
+    (opts.errorIncludesOffline && opts.offlineConfirmed) ||
+    Boolean(opts.errorIncludesSensorFaults && state.sensorFault && online);
 
   // Precedence: ERROR > DOCKED > MOWING. Charging-pause(39) is mid-job, not docked.
   const docked =
@@ -40,5 +41,7 @@ export function mapState(
     docked: error ? false : docked,
     mowing: error ? false : mowing,
     active: error ? false : (mowing || returning),
+    bladeWorn: Boolean(state.bladeWorn),
+    mowPercent: Math.max(0, Math.min(100, Number(state.mowPercent ?? 0))),
   };
 }

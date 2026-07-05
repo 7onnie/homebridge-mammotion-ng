@@ -11,14 +11,16 @@ import { MammotionClient } from './mammotion-client';
 import { MammotionMatterVacuum } from './matter-accessory';
 import { MammotionAbortSwitch } from './abort-switch';
 import { MammotionPlanSwitch } from './plan-switch';
-import { MammotionSensorAccessory, SENSOR_LABEL, type SensorKind } from './sensor-accessory';
+import { MammotionSensorAccessory, SENSOR_LABEL, type SensorKind, type HistoryLogger } from './sensor-accessory';
+import { MammotionProgressAccessory } from './progress-accessory';
 import { PLATFORM_NAME, PLUGIN_NAME } from './settings';
 import { mapState } from './state-mapper';
 import type { DerivedState, MammotionDeviceInfo, MammotionPlan, MammotionPlatformConfig } from './types';
+import FakeGatoHistoryServiceFactory = require('fakegato-history');
 
 type AccessoryContext = {
   deviceName: string;
-  kind?: 'sensors' | 'abort' | 'plan';
+  kind?: 'sensors' | 'abort' | 'plan' | 'progress';
   planId?: string;
 };
 
@@ -45,7 +47,9 @@ export class MammotionPlatform implements DynamicPlatformPlugin {
   private readonly abortHandlers = new Map<string, MammotionAbortSwitch>();
   private readonly planHandlers = new Map<string, MammotionPlanSwitch[]>();
   private readonly lastPlanKey = new Map<string, string>();
+  private readonly progressHandlers = new Map<string, MammotionProgressAccessory>();
   private readonly deviceInfo = new Map<string, MammotionDeviceInfo>();
+  private fakeGatoFactory?: ReturnType<typeof FakeGatoHistoryServiceFactory>;
   private readonly debouncer = new Debouncer();
   private readonly offlineCounts = new Map<string, number>();
   private readonly uuidNamespace: string;
@@ -103,6 +107,7 @@ export class MammotionPlatform implements DynamicPlatformPlugin {
       }
       await this.syncSensors();
       await this.syncAbortSwitch();
+      await this.syncProgress();
       this.cleanupDisabledPlanSwitches();
       await this.pollOnce();
 
@@ -194,6 +199,7 @@ export class MammotionPlatform implements DynamicPlatformPlugin {
         this.client,
         this.uuidNamespace,
         this.displayNameFor(device),
+        this.config.exposeBattery !== false,
       );
       this.matterHandlers.set(device.name, handler);
       liveUuids.add(handler.uuid);
@@ -227,6 +233,7 @@ export class MammotionPlatform implements DynamicPlatformPlugin {
       { kind: 'docked', on: this.config.sensorDocked !== false },
       { kind: 'mowing', on: this.config.sensorMowing !== false },
       { kind: 'error', on: this.config.sensorError !== false },
+      { kind: 'bladewear', on: this.config.sensorBladeWear === true },
     ];
 
     // One accessory per sensor kind (distinct names in Apple Home).
@@ -247,7 +254,8 @@ export class MammotionPlatform implements DynamicPlatformPlugin {
         accessory.context.deviceName = device.name;
         accessory.context.kind = 'sensors';
         accessory.displayName = `${dName} ${SENSOR_LABEL[kind]}`;
-        handlers.push(new MammotionSensorAccessory(this, accessory, device.name, dName, kind, this.debouncer, debounceMs));
+        const history = this.makeDoorHistory(accessory);
+        handlers.push(new MammotionSensorAccessory(this, accessory, device.name, dName, kind, this.debouncer, debounceMs, history));
         if (existing) {
           this.api.updatePlatformAccessories([existing]);
         } else {
@@ -314,6 +322,71 @@ export class MammotionPlatform implements DynamicPlatformPlugin {
     }
   }
 
+  // fakegato 'door' history for a contact-sensor accessory (Eve open/close
+  // timeline). HAP-only; Apple Home ignores the Eve service. Returns undefined
+  // when disabled or if the library can't init.
+  private makeDoorHistory(accessory: PlatformAccessory<AccessoryContext>): HistoryLogger | undefined {
+    if (this.config.enableEveHistory === false) {
+      return undefined;
+    }
+    try {
+      if (!this.fakeGatoFactory) {
+        this.fakeGatoFactory = FakeGatoHistoryServiceFactory(this.api);
+      }
+      const service = new this.fakeGatoFactory('door', accessory, {
+        storage: 'fs',
+        path: this.api.user.persistPath(),
+        size: 4096,
+      });
+      return service as unknown as HistoryLogger;
+    } catch (e) {
+      this.log.debug(`Eve history unavailable: ${(e as Error).message}`);
+      return undefined;
+    }
+  }
+
+  // Mow-progress % as a HumiditySensor (opt-in). Same stable-UUID + stale-remove
+  // pattern as the other sensors.
+  private async syncProgress(): Promise<void> {
+    const enabled = this.config.sensorProgress === true;
+    const devices = enabled ? this.filterDevices(await this.client.discoverDevices()) : [];
+    const liveNames = new Set(devices.map(device => device.name));
+
+    for (const device of devices) {
+      const dName = this.displayNameFor(device);
+      const uuid = this.api.hap.uuid.generate(`${PLUGIN_NAME}:${this.uuidNamespace}:${device.name}:sensor:progress`);
+      const existing = this.accessories.find(item => item.UUID === uuid);
+      const accessory = existing ?? new this.api.platformAccessory<AccessoryContext>(`${dName} Progress`, uuid);
+      accessory.context.deviceName = device.name;
+      accessory.context.kind = 'progress';
+      accessory.displayName = `${dName} Progress`;
+      const handler = new MammotionProgressAccessory(this, accessory, device.name, dName);
+      this.progressHandlers.set(device.name, handler);
+      if (existing) {
+        this.api.updatePlatformAccessories([existing]);
+      } else {
+        this.api.registerPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, [accessory]);
+        this.accessories.push(accessory);
+        this.log.info(`Added progress sensor for ${device.name}`);
+      }
+    }
+
+    const stale = this.accessories.filter(
+      item => item.context.kind === 'progress' && !liveNames.has(item.context.deviceName),
+    );
+    if (stale.length > 0) {
+      this.api.unregisterPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, stale);
+      for (const acc of stale) {
+        this.progressHandlers.delete(acc.context.deviceName);
+        const index = this.accessories.findIndex(item => item.UUID === acc.UUID);
+        if (index >= 0) {
+          this.accessories.splice(index, 1);
+        }
+      }
+      this.log.info(`Removed ${stale.length} stale progress sensor(s)`);
+    }
+  }
+
   private async pollOnce(): Promise<void> {
     const states = await this.client.pollStates();
     const gracePolls = Math.max(0, this.config.offlineGracePolls ?? 2);
@@ -327,7 +400,11 @@ export class MammotionPlatform implements DynamicPlatformPlugin {
       this.offlineCounts.set(state.name, count);
       const offlineConfirmed = count > gracePolls;
 
-      const derived: DerivedState = mapState(state, { offlineConfirmed, errorIncludesOffline });
+      const derived: DerivedState = mapState(state, {
+        offlineConfirmed,
+        errorIncludesOffline,
+        errorIncludesSensorFaults: this.config.errorIncludesSensorFaults === true,
+      });
 
       const matter = this.matterHandlers.get(state.name);
       if (matter) {
@@ -342,6 +419,11 @@ export class MammotionPlatform implements DynamicPlatformPlugin {
         for (const sensor of sensors) {
           try { sensor.updateState(derived, now); } catch (e) { this.log.debug(`Sensor update failed: ${(e as Error).message}`); }
         }
+      }
+
+      const progress = this.progressHandlers.get(state.name);
+      if (progress) {
+        try { progress.updateState(derived); } catch (e) { this.log.debug(`Progress update failed: ${(e as Error).message}`); }
       }
 
       if (this.config.enablePlanSwitches === true) {

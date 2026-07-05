@@ -22,6 +22,16 @@ export interface MammotionPlatformConfig {
   sensorDebounceSeconds?: number;
   offlineGracePolls?: number;
   enableAbortSwitch?: boolean;
+  // Battery % on the Matter RVC via the Power Source cluster. Default on.
+  exposeBattery?: boolean;
+  // Blade-service contact sensor (opens when blade wear >= warning threshold).
+  sensorBladeWear?: boolean;
+  // Mow-progress % as a humidity sensor (shows "%"; Eve gets a native graph).
+  sensorProgress?: boolean;
+  // Also trip the Problem sensor on bumper/ultrasonic ERROR (obstacle/stuck).
+  errorIncludesSensorFaults?: boolean;
+  // Eve (fakegato) open/close history on the contact sensors. Default on.
+  enableEveHistory?: boolean;
   // Per-plan momentary "Run <plan>" switches (one per saved plan), opt-in.
   enablePlanSwitches?: boolean;
   // Name of the saved plan the RVC ▶ Play button runs when several exist.
@@ -63,6 +73,9 @@ export interface MammotionState {
   selectedAreaIds: number[];
   currentAreaId: number | null;
   plans?: MammotionPlan[];
+  mowPercent?: number;
+  bladeWorn?: boolean;
+  sensorFault?: boolean;
 }
 
 export interface MammotionBridgeResponse<T = unknown> {
@@ -77,4 +90,6 @@ export interface DerivedState {
   mowing: boolean;
   error: boolean;
   active: boolean; // mowing || returning
+  bladeWorn: boolean;
+  mowPercent: number; // 0-100
 }

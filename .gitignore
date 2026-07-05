@@ -5,3 +5,7 @@ dist/
 .python-bridge-venv/
 .python-standalone/
 *.tgz
+
+# Python bytecode
+__pycache__/
+*.pyc

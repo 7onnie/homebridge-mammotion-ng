@@ -403,6 +403,32 @@ class Bridge:
 
         progress = int((getattr(work, "area", 0) or 0) >> 16)
 
+        # Mow completion % (clamped 0-100 via the library's mow_percent property).
+        try:
+            mow_percent = int(getattr(work, "mow_percent", progress) or 0)
+        except Exception:
+            mow_percent = progress
+        mow_percent = max(0, min(100, mow_percent))
+
+        # Blade wear: used-time >= warning threshold (warn==0 => unknown/disabled).
+        try:
+            blade = getattr(getattr(state.report_data, "maintenance", None), "blade_used_time", None)
+            blade_used = int(getattr(blade, "blade_used_time", 0) or 0)
+            blade_warn = int(getattr(blade, "blade_used_warn_time", 0) or 0)
+            blade_worn = blade_warn > 0 and blade_used >= blade_warn
+        except Exception:
+            blade_worn = False
+
+        # Obstacle/sensor fault: bumper or any ultrasonic sensor in ERROR (>=2).
+        sensor_fault = False
+        for attr in ("bumper_state", "ult_left", "ult_left_front", "ult_right_front", "ult_right"):
+            try:
+                if int(getattr(dev, attr, 0) or 0) >= 2:
+                    sensor_fault = True
+                    break
+            except Exception:
+                pass
+
         return {
             "name": state.name,
             "online": self._is_online(handle),
@@ -416,6 +442,9 @@ class Bridge:
             "selectedAreaIds": selected_areas,
             "currentAreaId": current_area,
             "plans": self._plans_list(state),
+            "mowPercent": mow_percent,
+            "bladeWorn": blade_worn,
+            "sensorFault": sensor_fault,
         }
 
     def _service_area_state(self, device_name: str, state: Any) -> tuple[list[dict[str, Any]], list[int], int | None]:

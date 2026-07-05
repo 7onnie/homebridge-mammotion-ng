@@ -40,6 +40,7 @@ export class MammotionMatterVacuum {
     private readonly client: MammotionClient,
     uuidSeed: string,
     displayName: string,
+    private readonly exposeBattery: boolean,
   ) {
     this.state = {
       name: this.device.name,
@@ -120,6 +121,19 @@ export class MammotionMatterVacuum {
         },
       },
     };
+
+    // Battery on the RVC tile via the Matter Power Source cluster. Declaring it
+    // with batPercentRemaining + batChargeState makes Homebridge attach a
+    // Battery+Rechargeable PowerSourceServer. Updated live in updateState().
+    if (this.exposeBattery) {
+      (this.accessory.clusters as Record<string, unknown>).powerSource = {
+        status: 1,               // Active
+        batPresent: true,
+        batChargeLevel: 0,       // Ok
+        batPercentRemaining: 0,  // Matter encodes % as *2; set on first poll
+        batChargeState: 0,       // Unknown
+      };
+    }
   }
 
   toAccessory(): MatterAccessoryLike {
@@ -147,6 +161,20 @@ export class MammotionMatterVacuum {
     await this.matterApi.updateAccessoryState(this.uuid, 'rvcOperationalState', {
       operationalState,
     });
+
+    if (this.exposeBattery) {
+      const pct = Math.max(0, Math.min(100, Math.round(Number(nextState.battery ?? 0))));
+      const charge = Number(nextState.chargeState ?? 0);
+      // Matter batChargeState: 1=IsCharging, 2=IsAtFullCharge, 3=IsNotCharging.
+      const batChargeState = charge !== 0 ? (pct >= 100 ? 2 : 1) : 3;
+      // Matter batChargeLevel: 0=Ok, 1=Warning, 2=Critical.
+      const batChargeLevel = pct <= 10 ? 2 : pct <= 20 ? 1 : 0;
+      await this.matterApi.updateAccessoryState(this.uuid, 'powerSource', {
+        batPercentRemaining: pct * 2, // Matter encodes % as double (0-200)
+        batChargeState,
+        batChargeLevel,
+      }).catch(() => undefined);
+    }
   }
 
   private toOperationalState(state: MammotionState, derived: DerivedState): number {
