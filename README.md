@@ -1,8 +1,17 @@
-# homebridge-mammotion-ng
+<h1 align="center">homebridge-mammotion-ng</h1>
 
-[![license-mit](https://badgen.net/static/license/mit/blue)](./LICENSE)
+<p align="center">
+  Homebridge plugin for Mammotion mowers — hybrid Matter Robot Vacuum + HomeKit trigger sensors + Abort switch, via PyMammotion.
+</p>
 
-Homebridge plugin for Mammotion mowers — hybrid Matter Robot Vacuum + HomeKit trigger sensors + Abort switch, via PyMammotion.
+<!-- BADGES:START -->
+<p align="center">
+  <a href="https://github.com/7onnie/homebridge-mammotion-ng/actions/workflows/release.yml"><img alt="CI" src="https://github.com/7onnie/homebridge-mammotion-ng/actions/workflows/release.yml/badge.svg"></a>
+  <a href="https://github.com/7onnie/homebridge-mammotion-ng/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/7onnie/homebridge-mammotion-ng?sort=semver"></a>
+  <a href="LICENSE"><img alt="License" src="https://img.shields.io/github/license/7onnie/homebridge-mammotion-ng"></a>
+  <a href="https://buymeacoffee.com/7onnie"><img alt="Buy me a coffee" src="https://img.shields.io/badge/Buy%20me%20a%20coffee-FFDD00?logo=buymeacoffee&logoColor=black"></a>
+</p>
+<!-- BADGES:END -->
 
 ## Features
 
