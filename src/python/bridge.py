@@ -94,6 +94,9 @@ class Bridge:
         # not burn the send quota with a permanent fast retry loop.
         self._area_retry_secs: dict[str, float] = {}
         self._plan_retry_secs: dict[str, float] = {}
+        # (sys_time_stamp value, monotonic time it last changed) per device —
+        # primary staleness signal, see _transport_health.
+        self._report_seen: dict[str, tuple[str, float]] = {}
         # Last non-empty plan list per device. state.map.plan is transiently
         # cleared while a mow is running (and stays empty while the transport
         # is wedged), so both the Node side and _start fall back to this cache
@@ -197,8 +200,7 @@ class Bridge:
         """Return the underlying MowerDevice (== old MowingDevice) for a handle."""
         return handle.snapshot.raw
 
-    @staticmethod
-    def _transport_health(handle: Any) -> dict[str, Any]:
+    def _transport_health(self, handle: Any) -> dict[str, Any]:
         """Staleness + silent-failure flags for the watchdog on the Node side.
 
         pymammotion has three states in which it silently stops ALL outbound
@@ -209,11 +211,29 @@ class Bridge:
         to the caller, so expose the internals and let the Node side decide to
         restart the bridge. Reads private attributes on purpose — pymammotion
         is version-pinned (0.8.8) and every field is best-effort.
+
+        Staleness signal: primarily "seconds since report_data.dev.sys_time_stamp
+        last changed" (the device stamps every report, so a frozen value means no
+        report arrived). transport.last_received_monotonic is only a secondary
+        input because the 0.8.8 Aliyun cloud path never stamps it (its shared
+        connection overrides ``on_message`` as a plain field, bypassing the
+        stamping property setter in transport/base.py — live-verified).
         """
         stale_seconds: float | None = None
         mqtt_offline = False
         rate_limited = False
         auth_failed = False
+        now_mono = time.monotonic()
+        try:
+            ts = str(getattr(handle.snapshot.raw.report_data.dev, "sys_time_stamp", "") or "")
+            if ts:
+                seen = self._report_seen.get(handle.device_name)
+                if seen is None or seen[0] != ts:
+                    seen = (ts, now_mono)
+                    self._report_seen[handle.device_name] = seen
+                stale_seconds = max(0.0, now_mono - seen[1])
+        except Exception:
+            pass
         try:
             transports = dict(getattr(handle, "_transports", {}) or {})
             last_recv = max(
@@ -221,7 +241,8 @@ class Bridge:
                 default=0.0,
             )
             if last_recv > 0.0:
-                stale_seconds = max(0.0, time.monotonic() - last_recv)
+                transport_stale = max(0.0, now_mono - last_recv)
+                stale_seconds = transport_stale if stale_seconds is None else min(stale_seconds, transport_stale)
             for t in transports.values():
                 if bool(getattr(t, "is_rate_limited", False)):
                     rate_limited = True
