@@ -15,13 +15,16 @@ import { MammotionSensorAccessory, SENSOR_LABEL, type SensorKind, type HistoryLo
 import { MammotionProgressAccessory } from './progress-accessory';
 import { PLATFORM_NAME, PLUGIN_NAME } from './settings';
 import { mapState } from './state-mapper';
-import type { DerivedState, MammotionDeviceInfo, MammotionPlan, MammotionPlatformConfig } from './types';
+import type { DerivedState, MammotionDeviceInfo, MammotionPlan, MammotionPlatformConfig, MammotionState } from './types';
 import FakeGatoHistoryServiceFactory = require('fakegato-history');
 
 type AccessoryContext = {
   deviceName: string;
   kind?: 'sensors' | 'abort' | 'plan' | 'progress';
   planId?: string;
+  // Persisted plan name so cached plan switches can be re-armed with a working
+  // handler on startup, before (or without) the first non-empty plan sync.
+  planName?: string;
 };
 
 export class MammotionPlatform implements DynamicPlatformPlugin {
@@ -53,6 +56,13 @@ export class MammotionPlatform implements DynamicPlatformPlugin {
   private readonly debouncer = new Debouncer();
   private readonly offlineCounts = new Map<string, number>();
   private readonly uuidNamespace: string;
+  // Wedged-transport watchdog + crash-respawn state.
+  private readonly staleThresholdSeconds: number;
+  private watchdogRestarts = 0;
+  private watchdogNextRestartAt = 0;
+  private restartInFlight = false;
+  private respawnDelayMs = 10_000;
+  private shuttingDown = false;
 
   constructor(
     public readonly log: Logger,
@@ -63,6 +73,8 @@ export class MammotionPlatform implements DynamicPlatformPlugin {
     this.config = typedConfig;
     this.pollingSeconds = Math.max(5, typedConfig.pollIntervalSeconds ?? 15);
     this.client = new MammotionClient(log, typedConfig);
+    // Wedged = no inbound cloud frame for 3 activity-loop cycles (min 10 min).
+    this.staleThresholdSeconds = Math.max(3 * (typedConfig.cloudRefreshSeconds ?? 120), 600);
     this.matterEnabled = this.shouldUseMatterRvc();
     this.uuidNamespace = this.buildUuidNamespace();
 
@@ -98,6 +110,27 @@ export class MammotionPlatform implements DynamicPlatformPlugin {
 
     this.started = true;
 
+    // Auto-respawn: without this, an unexpected bridge death left the plugin
+    // permanently dead (nothing listened for 'exit'). Doubling backoff so a
+    // crash-looping bridge can't hammer the Mammotion cloud with logins.
+    this.client.on('exit', (error: Error) => {
+      if (this.shuttingDown) {
+        return;
+      }
+      this.log.error(`${error.message} — respawning in ${Math.round(this.respawnDelayMs / 1000)}s`);
+      const delay = this.respawnDelayMs;
+      this.respawnDelayMs = Math.min(this.respawnDelayMs * 2, 600_000);
+      const timer = setTimeout(() => {
+        void this.client.start()
+          .then(() => {
+            this.log.info('Mammotion bridge respawned');
+            this.respawnDelayMs = 10_000;
+          })
+          .catch((e: Error) => this.log.error(`Bridge respawn failed: ${e.message}`));
+      }, delay);
+      timer.unref?.();
+    });
+
     try {
       await this.client.start();
       if (this.matterEnabled) {
@@ -109,6 +142,7 @@ export class MammotionPlatform implements DynamicPlatformPlugin {
       await this.syncAbortSwitch();
       await this.syncProgress();
       this.cleanupDisabledPlanSwitches();
+      this.armCachedPlanSwitches();
       await this.pollOnce();
 
       this.pollTimer = setInterval(() => {
@@ -124,6 +158,7 @@ export class MammotionPlatform implements DynamicPlatformPlugin {
   }
 
   private async shutdown(): Promise<void> {
+    this.shuttingDown = true;
     if (this.pollTimer) {
       clearInterval(this.pollTimer);
       this.pollTimer = undefined;
@@ -436,12 +471,78 @@ export class MammotionPlatform implements DynamicPlatformPlugin {
         }
       }
     }
+
+    await this.runTransportWatchdog(states);
+  }
+
+  // pymammotion (0.8.8) has three states in which it silently stops all
+  // outbound cloud sends: the cloud once flagged the device offline (cleared
+  // only by an inbound frame — deadlocks when nothing arrives), the re-login
+  // circuit breaker tripped, and the self-imposed send quota. HomeKit then
+  // freezes on stale data for hours (live-diagnosed 2026-07-10). The only
+  // reliable recovery is a full bridge recycle (fresh login + MQTT session).
+  // Escalating backoff keeps a genuinely-offline mower (winter storage) from
+  // triggering restart loops that hammer the Mammotion login endpoint.
+  private async runTransportWatchdog(states: MammotionState[]): Promise<void> {
+    const staleValues = states
+      .map(state => state.staleSeconds)
+      .filter((value): value is number => typeof value === 'number');
+    if (staleValues.length === 0) {
+      return; // no inbound frame since bridge start: nothing to compare against
+    }
+
+    const minStale = Math.min(...staleValues);
+    if (minStale <= this.staleThresholdSeconds) {
+      if (this.watchdogRestarts > 0) {
+        this.log.info('Mammotion cloud data flowing again — watchdog backoff reset');
+      }
+      this.watchdogRestarts = 0;
+      this.watchdogNextRestartAt = 0;
+      return;
+    }
+
+    const flags = states
+      .map(s => `${s.name}: stale=${Math.round(s.staleSeconds ?? -1)}s offline_flag=${s.mqttReportedOffline ?? '?'} rate_limited=${s.rateLimited ?? '?'} auth_failed=${s.authFailed ?? '?'}`)
+      .join('; ');
+
+    const now = Date.now();
+    if (this.restartInFlight || now < this.watchdogNextRestartAt) {
+      this.log.debug(`Watchdog: transport still stale (${flags}), next restart not before ${new Date(this.watchdogNextRestartAt).toISOString()}`);
+      return;
+    }
+
+    const backoffMinutes = [15, 60, 360];
+    const backoff = backoffMinutes[Math.min(this.watchdogRestarts, backoffMinutes.length - 1)];
+    this.watchdogRestarts += 1;
+    this.watchdogNextRestartAt = now + backoff * 60_000;
+    this.log.warn(
+      `No inbound cloud data for ${Math.round(minStale)}s (threshold ${this.staleThresholdSeconds}s) — ` +
+      `recycling bridge for a fresh cloud session (attempt ${this.watchdogRestarts}, next retry in ${backoff}min if still stale). [${flags}]`,
+    );
+
+    this.restartInFlight = true;
+    try {
+      await this.client.restart();
+      this.log.info('Mammotion bridge restarted by watchdog');
+    } catch (e) {
+      this.log.error(`Watchdog bridge restart failed: ${(e as Error).message}`);
+    } finally {
+      this.restartInFlight = false;
+    }
   }
 
   // Plan switches are dynamic: driven by the mower's saved plans (from poll),
   // not device discovery. Re-synced only when the plan set changes, so we don't
   // churn accessory registration every poll.
   private syncPlanSwitches(deviceName: string, displayName: string, plans: MammotionPlan[]): void {
+    // An empty list is a transient artifact (plan sync pending, mow running,
+    // transport wedged), never a user deleting their plans one poll after
+    // starting a mow. Deleting the accessories here destroys HomeKit
+    // automations/room assignments, so keep the last known switches instead.
+    if (plans.length === 0) {
+      return;
+    }
+
     const key = plans.map(p => `${p.id}:${p.name}`).sort().join('|');
     if (this.lastPlanKey.get(deviceName) === key) {
       return;
@@ -459,6 +560,7 @@ export class MammotionPlatform implements DynamicPlatformPlugin {
       accessory.context.deviceName = deviceName;
       accessory.context.kind = 'plan';
       accessory.context.planId = plan.id;
+      accessory.context.planName = plan.name;
       accessory.displayName = name;
       handlers.push(new MammotionPlanSwitch(this, accessory, deviceName, displayName, plan.id, plan.name, this.client));
       if (existing) {
@@ -483,6 +585,35 @@ export class MammotionPlatform implements DynamicPlatformPlugin {
         }
       }
       this.log.info(`Removed ${stale.length} stale plan switch(es) for ${deviceName}`);
+    }
+  }
+
+  // Attach working handlers to plan switches restored from the accessory cache
+  // at startup. Without this, cached tiles sit dead in HomeKit until the first
+  // non-empty plan sync happens to run — which never comes while the plan list
+  // is empty (mow running / transport wedged).
+  private armCachedPlanSwitches(): void {
+    if (this.config.enablePlanSwitches !== true) {
+      return;
+    }
+    for (const accessory of this.accessories) {
+      if (accessory.context.kind !== 'plan' || !accessory.context.planId) {
+        continue;
+      }
+      const deviceName = accessory.context.deviceName;
+      const info = this.deviceInfo.get(deviceName);
+      const displayName = info ? this.displayNameFor(info) : deviceName;
+      const planName = accessory.context.planName
+        ?? accessory.displayName.replace(`${displayName} Run `, '');
+      const handlers = this.planHandlers.get(deviceName) ?? [];
+      if (handlers.some(h => h.planIdKey === accessory.context.planId)) {
+        continue;
+      }
+      handlers.push(new MammotionPlanSwitch(
+        this, accessory, deviceName, displayName, accessory.context.planId, planName, this.client,
+      ));
+      this.planHandlers.set(deviceName, handlers);
+      this.log.info(`Re-armed cached plan switch '${planName}' for ${deviceName}`);
     }
   }
 
