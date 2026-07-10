@@ -76,6 +76,12 @@ export interface MammotionState {
   mowPercent?: number;
   bladeWorn?: boolean;
   sensorFault?: boolean;
+  // Transport health (bridge >= 0.4): drives the wedged-transport watchdog.
+  // staleSeconds = time since the last inbound cloud MQTT frame (null = none yet).
+  staleSeconds?: number | null;
+  mqttReportedOffline?: boolean;
+  rateLimited?: boolean;
+  authFailed?: boolean;
 }
 
 export interface MammotionBridgeResponse<T = unknown> {

@@ -36,7 +36,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import sys
+import time
 from typing import Any
 
 from pymammotion.client import MammotionClient
@@ -55,6 +57,25 @@ from pymammotion.utility.constant.device_constant import WorkMode, device_mode
 # set the APP_VERSION env var or hardcode a newer value here.
 HA_VERSION = APP_VERSION.split(".", 1)[1] if APP_VERSION.startswith("2.") else "3.8.19"
 
+# Surface pymammotion's own WARNING+ messages (rate-limit quota exhausted,
+# re-login circuit breaker, availability changes) on stderr so the Node side
+# can show them in the Homebridge log. Without this they die in a NullHandler
+# and the plugin is blind to every silent-degradation mode the library has.
+logging.basicConfig(
+    stream=sys.stderr,
+    level=logging.WARNING,
+    format="%(levelname)s %(name)s: %(message)s",
+)
+
+# Cadence for bridge-initiated cloud syncs. pymammotion self-imposes a send
+# quota of 600 commands per rolling 12 h window (= 50/h averaged) per MQTT
+# transport; exceeding it silently blocks ALL sends. Budget the steady state
+# well below that: activity-loop report polls (~30/h at the default
+# cloudRefreshSeconds=120) + map refresh (3 cmds / SYNC_HYDRATED_SECS) +
+# plan refresh (1 cmd / SYNC_HYDRATED_SECS) ≈ 46/h.
+SYNC_RETRY_EMPTY_SECS = 60.0
+SYNC_HYDRATED_SECS = 900.0
+
 
 class Bridge:
     def __init__(self) -> None:
@@ -68,6 +89,16 @@ class Bridge:
         self._area_id_map: dict[str, dict[int, int]] = {}
         self._next_area_refresh_at: dict[str, float] = {}
         self._next_plan_refresh_at: dict[str, float] = {}
+        # Escalating retry delay while map/plan metadata is empty (60 s doubling
+        # up to SYNC_HYDRATED_SECS) so an account whose map never hydrates does
+        # not burn the send quota with a permanent fast retry loop.
+        self._area_retry_secs: dict[str, float] = {}
+        self._plan_retry_secs: dict[str, float] = {}
+        # Last non-empty plan list per device. state.map.plan is transiently
+        # cleared while a mow is running (and stays empty while the transport
+        # is wedged), so both the Node side and _start fall back to this cache
+        # instead of treating "temporarily empty" as "no plans exist".
+        self._last_plans: dict[str, list[dict[str, str]]] = {}
 
     async def handle(self, method: str, params: dict[str, Any]) -> Any:
         if method == "init":
@@ -167,6 +198,49 @@ class Bridge:
         return handle.snapshot.raw
 
     @staticmethod
+    def _transport_health(handle: Any) -> dict[str, Any]:
+        """Staleness + silent-failure flags for the watchdog on the Node side.
+
+        pymammotion has three states in which it silently stops ALL outbound
+        sends (verified against 0.8.8): the cloud once reported the device
+        offline (``mqtt_reported_offline``, cleared only by an inbound frame —
+        can deadlock), the re-login circuit breaker tripped (permanent until
+        re-init), and the self-imposed 600-sends/12 h quota. None of them raise
+        to the caller, so expose the internals and let the Node side decide to
+        restart the bridge. Reads private attributes on purpose — pymammotion
+        is version-pinned (0.8.8) and every field is best-effort.
+        """
+        stale_seconds: float | None = None
+        mqtt_offline = False
+        rate_limited = False
+        auth_failed = False
+        try:
+            transports = dict(getattr(handle, "_transports", {}) or {})
+            last_recv = max(
+                (float(getattr(t, "last_received_monotonic", 0.0) or 0.0) for t in transports.values()),
+                default=0.0,
+            )
+            if last_recv > 0.0:
+                stale_seconds = max(0.0, time.monotonic() - last_recv)
+            for t in transports.values():
+                if bool(getattr(t, "is_rate_limited", False)):
+                    rate_limited = True
+                if bool(getattr(t, "_auth_failed", False)) or bool(getattr(t, "_unrecoverable_auth_failure", False)):
+                    auth_failed = True
+        except Exception:
+            pass
+        try:
+            mqtt_offline = bool(handle._availability.mqtt_reported_offline)  # noqa: SLF001
+        except Exception:
+            pass
+        return {
+            "staleSeconds": round(stale_seconds, 1) if stale_seconds is not None else None,
+            "mqttReportedOffline": mqtt_offline,
+            "rateLimited": rate_limited,
+            "authFailed": auth_failed,
+        }
+
+    @staticmethod
     def _is_online(handle: Any) -> bool:
         """Best-effort online flag from the immutable snapshot."""
         try:
@@ -244,9 +318,12 @@ class Bridge:
 
                 # Retry quickly while no area metadata is available, otherwise back off.
                 if len(map_areas) == 0 and len(map_area_names) == 0:
-                    self._next_area_refresh_at[device_name] = now + 20.0
+                    retry = self._area_retry_secs.get(device_name, SYNC_RETRY_EMPTY_SECS)
+                    self._next_area_refresh_at[device_name] = now + retry
+                    self._area_retry_secs[device_name] = min(retry * 2, SYNC_HYDRATED_SECS)
                 else:
-                    self._next_area_refresh_at[device_name] = now + 120.0
+                    self._next_area_refresh_at[device_name] = now + SYNC_HYDRATED_SECS
+                    self._area_retry_secs[device_name] = SYNC_RETRY_EMPTY_SECS
 
             if now >= self._next_plan_refresh_at.get(device_name, 0):
                 try:
@@ -256,9 +333,12 @@ class Bridge:
                     self._debug(f"{device_name}: start_plan_sync failed: {ex}")
 
                 if len(map_plans) == 0:
-                    self._next_plan_refresh_at[device_name] = now + 20.0
+                    retry = self._plan_retry_secs.get(device_name, SYNC_RETRY_EMPTY_SECS)
+                    self._next_plan_refresh_at[device_name] = now + retry
+                    self._plan_retry_secs[device_name] = min(retry * 2, SYNC_HYDRATED_SECS)
                 else:
-                    self._next_plan_refresh_at[device_name] = now + 300.0
+                    self._next_plan_refresh_at[device_name] = now + SYNC_HYDRATED_SECS
+                    self._plan_retry_secs[device_name] = SYNC_RETRY_EMPTY_SECS
 
             plan_names = []
             for plan in map_plans.values():
@@ -270,11 +350,14 @@ class Bridge:
             fallback_names = self._configured_area_names(device_name)
             _dev = state.report_data.dev
             _ss = int(getattr(_dev, "sys_status", 0) or 0)
+            _health = self._transport_health(handle)
             self._debug(
                 f"{device_name}: sys={_ss}({self._mode_name(_ss)}) charge={int(getattr(_dev, 'charge_state', 0) or 0)} "
                 f"map areas={len(map_areas)} area_names={len(map_area_names)} "
                 f"zone_hashs={len(list(getattr(getattr(state, 'work', None), 'zone_hashs', []) or []))} "
-                f"plans={len(map_plans)} plan_names={plan_names} fallback_names={fallback_names}"
+                f"plans={len(map_plans)} plan_names={plan_names} fallback_names={fallback_names} "
+                f"stale={_health['staleSeconds']}s offline_flag={_health['mqttReportedOffline']} "
+                f"rate_limited={_health['rateLimited']} auth_failed={_health['authFailed']}"
             )
 
             states.append(self._to_state(device_name, handle))
@@ -329,6 +412,10 @@ class Bridge:
             await self._send_command(name, "cancel_return_to_dock")
         plan_state = self._raw_state(self._handle_by_name(name))
         plan_id, _label = self._resolve_plan_id(plan_state, prefer_name=self.default_plan)
+        if not plan_id:
+            # state.map.plan is transiently empty (mow running / sync pending):
+            # fall back to the last non-empty plan list seen for this device.
+            plan_id = self._cached_plan_id(name, prefer_name=self.default_plan)
         if plan_id:
             await self._send_command(name, "single_schedule", plan_id=plan_id)
             return
@@ -382,6 +469,17 @@ class Bridge:
                 partial["dock_error"] = repr(ex)
         return partial
 
+    def _cached_plan_id(self, name: str, prefer_name: str | None = None) -> str | None:
+        """Plan id from the last non-empty plan list (name-preferred, else first)."""
+        cached = self._last_plans.get(name) or []
+        if not cached:
+            return None
+        if prefer_name:
+            for item in cached:
+                if item.get("name") == prefer_name:
+                    return item.get("id")
+        return cached[0].get("id")
+
     async def _request_iot_sync(self, name: str) -> None:
         # One-shot count=1 report via pymammotion's own helper. The old
         # RptAct.RPT_START/count=0 was a BLE-only continuous stream and a no-op
@@ -429,6 +527,15 @@ class Bridge:
             except Exception:
                 pass
 
+        # Plan list: cache the last non-empty snapshot and serve it while the
+        # live map.plan dict is transiently empty (mow running, sync pending,
+        # transport wedged) so the Node side never sees plans "disappear".
+        plans = self._plans_list(state)
+        if plans:
+            self._last_plans[device_name] = plans
+        else:
+            plans = self._last_plans.get(device_name, [])
+
         return {
             "name": state.name,
             "online": self._is_online(handle),
@@ -441,10 +548,11 @@ class Bridge:
             "serviceAreas": service_areas,
             "selectedAreaIds": selected_areas,
             "currentAreaId": current_area,
-            "plans": self._plans_list(state),
+            "plans": plans,
             "mowPercent": mow_percent,
             "bladeWorn": blade_worn,
             "sensorFault": sensor_fault,
+            **self._transport_health(handle),
         }
 
     def _service_area_state(self, device_name: str, state: Any) -> tuple[list[dict[str, Any]], list[int], int | None]:

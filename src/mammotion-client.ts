@@ -30,6 +30,7 @@ export class MammotionClient extends EventEmitter {
   private timeouts = new Map<number, NodeJS.Timeout>();
   private buffer = '';
   private pythonPath: string;
+  private stopping = false;
   private readonly userConfiguredPythonPath: boolean;
 
   constructor(
@@ -70,7 +71,12 @@ export class MammotionClient extends EventEmitter {
     this.process.stderr.on('data', (chunk: Buffer) => {
       const text = chunk.toString('utf8').trim();
       if (text.length > 0) {
-        if (text.includes('map areas=') || text.includes('get_area_name_list') || text.includes('start_map_sync')) {
+        // Python logging WARNING/ERROR lines (rate-limit quota, re-login circuit
+        // breaker, availability changes) must be visible in the Homebridge log —
+        // these are exactly the silent-degradation modes we went blind on.
+        if (/^(WARNING|ERROR|CRITICAL)\b/m.test(text)) {
+          this.log.warn(`[bridge] ${text}`);
+        } else if (text.includes('map areas=') || text.includes('get_area_name_list') || text.includes('start_map_sync')) {
           this.log.info(`[bridge] ${text}`);
         } else {
           this.log.debug(`[bridge] ${text}`);
@@ -87,7 +93,11 @@ export class MammotionClient extends EventEmitter {
       for (const t of this.timeouts.values()) { clearTimeout(t); }
       this.timeouts.clear();
       this.process = undefined;
-      this.emit('exit', error);
+      // 'exit' fires only for unexpected deaths; intentional stop()/restart()
+      // set this.stopping so the platform's auto-respawn doesn't fight them.
+      if (!this.stopping) {
+        this.emit('exit', error);
+      }
     });
 
     await this.request('init', {
@@ -103,9 +113,23 @@ export class MammotionClient extends EventEmitter {
       return;
     }
 
-    await this.request('shutdown', {}).catch(() => undefined);
-    this.process.kill();
-    this.process = undefined;
+    this.stopping = true;
+    try {
+      await this.request('shutdown', {}).catch(() => undefined);
+      this.process?.kill();
+      this.process = undefined;
+    } finally {
+      this.stopping = false;
+    }
+  }
+
+  // Full bridge recycle: kills the Python process and spawns a fresh one
+  // (fresh cloud login, fresh MQTT session, empty send-quota window). Used by
+  // the platform watchdog to recover from pymammotion's wedged-transport
+  // states, which have no in-process recovery path.
+  async restart(): Promise<void> {
+    await this.stop();
+    await this.start();
   }
 
   async discoverDevices(): Promise<MammotionDeviceInfo[]> {
