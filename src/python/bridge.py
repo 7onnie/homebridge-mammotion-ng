@@ -466,11 +466,31 @@ class Bridge:
 
         if mode == WorkMode.MODE_WORKING:
             await self._send_command(name, "pause_execute_task")
+            # return_to_dock sent while the device is still processing the
+            # pause is silently ignored — wait for WORKING to clear first.
+            await self._wait_leave_modes(name, {WorkMode.MODE_WORKING})
 
         if mode == WorkMode.MODE_RETURNING:
             await self._send_command(name, "cancel_return_to_dock")
 
         await self._send_command(name, "return_to_dock")
+
+    async def _wait_leave_modes(self, name: str, modes: set[int], timeout: float = 12.0) -> Any:
+        """Poll fresh reports until sys_status leaves *modes* (or timeout).
+
+        The mower ignores follow-up motion commands (e.g. return_to_dock) while
+        it is still processing a cancel/pause — live-verified 2026-07-11: an
+        immediate return_to_dock after cancel_job was silently dropped and the
+        Abort tile needed a second tap to send the mower home.
+        """
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout
+        while True:
+            dev = self._raw_state(self._handle_by_name(name)).report_data.dev
+            if int(getattr(dev, "sys_status", 0) or 0) not in modes or loop.time() >= deadline:
+                return dev
+            await self._request_iot_sync(name)
+            await asyncio.sleep(1.5)
 
     async def _cancel(self, name: str, mode: int | None) -> dict:
         partial = {"cancelled": False, "docked": False, "dock_error": None}
@@ -479,9 +499,9 @@ class Bridge:
             await self._request_iot_sync(name)
         await self._send_command(name, "cancel_job")
         partial["cancelled"] = True
-        # Re-read fresh state AFTER cancel to decide whether to send the mower home.
-        await self._request_iot_sync(name)
-        dev = self._raw_state(self._handle_by_name(name)).report_data.dev
+        # Wait until the cancel has actually settled (device left WORKING/PAUSE)
+        # before deciding whether to send the mower home — see _wait_leave_modes.
+        dev = await self._wait_leave_modes(name, {WorkMode.MODE_WORKING, WorkMode.MODE_PAUSE})
         if int(getattr(dev, "charge_state", 0) or 0) == 0 and dev.sys_status != WorkMode.MODE_RETURNING:
             try:
                 await self._send_command(name, "return_to_dock")

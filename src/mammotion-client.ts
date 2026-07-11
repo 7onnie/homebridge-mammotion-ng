@@ -30,7 +30,6 @@ export class MammotionClient extends EventEmitter {
   private timeouts = new Map<number, NodeJS.Timeout>();
   private buffer = '';
   private pythonPath: string;
-  private stopping = false;
   private readonly userConfiguredPythonPath: boolean;
 
   constructor(
@@ -84,7 +83,8 @@ export class MammotionClient extends EventEmitter {
       }
     });
 
-    this.process.on('exit', (code, signal) => {
+    const proc = this.process;
+    proc.on('exit', (code, signal) => {
       const error = new Error(`Bridge exited (code=${code ?? 'null'}, signal=${signal ?? 'null'})`);
       for (const [, request] of this.pending) {
         request.reject(error);
@@ -92,10 +92,12 @@ export class MammotionClient extends EventEmitter {
       this.pending.clear();
       for (const t of this.timeouts.values()) { clearTimeout(t); }
       this.timeouts.clear();
-      this.process = undefined;
-      // 'exit' fires only for unexpected deaths; intentional stop()/restart()
-      // set this.stopping so the platform's auto-respawn doesn't fight them.
-      if (!this.stopping) {
+      // Emit 'exit' only for unexpected deaths. stop()/restart() clear
+      // this.process synchronously before the (async) exit event lands, so an
+      // identity check is race-free — a flag reset in stop()'s finally was not
+      // (live-seen 2026-07-11: watchdog restart also triggered the respawn).
+      if (this.process === proc) {
+        this.process = undefined;
         this.emit('exit', error);
       }
     });
@@ -113,14 +115,13 @@ export class MammotionClient extends EventEmitter {
       return;
     }
 
-    this.stopping = true;
-    try {
-      await this.request('shutdown', {}).catch(() => undefined);
-      this.process?.kill();
-      this.process = undefined;
-    } finally {
-      this.stopping = false;
-    }
+    const proc = this.process;
+    await this.request('shutdown', {}).catch(() => undefined);
+    // Detach before kill: the exit handler treats a death of the still-attached
+    // process as unexpected, and this synchronous block runs before the (async)
+    // exit event can land.
+    this.process = undefined;
+    proc.kill();
   }
 
   // Full bridge recycle: kills the Python process and spawns a fresh one
