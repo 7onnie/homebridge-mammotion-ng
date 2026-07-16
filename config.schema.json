@@ -105,6 +105,12 @@
         "default": true,
         "condition": { "functionBody": "return model.enableStateSensors !== false;" }
       },
+       "sensorReturning": {
+        "title": "  • Returning",
+        "type": "boolean",
+        "default": true,
+        "condition": { "functionBody": "return model.enableStateSensors !== false;" }
+      },
       "sensorError": {
         "title": "  • Problem / stuck sensor",
         "type": "boolean",
