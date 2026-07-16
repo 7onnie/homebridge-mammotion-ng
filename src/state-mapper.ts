@@ -40,6 +40,7 @@ export function mapState(
     error,
     docked: error ? false : docked,
     mowing: error ? false : mowing,
+    returning: error ? false : returning,
     active: error ? false : (mowing || returning),
     bladeWorn: Boolean(state.bladeWorn),
     mowPercent: Math.max(0, Math.min(100, Number(state.mowPercent ?? 0))),
