@@ -28,7 +28,7 @@ function eventFor(kind: SensorKind, d: DerivedState): boolean {
     case 'docked': return !d.docked;   // open = undocked / away
     case 'mowing': return d.mowing;    // open = mowing
     case 'error': return d.error;      // open = problem
-    case 'returning': return d.returning;      // open = problem  
+    case 'returning': return d.returning; // open = returning to dock  
     case 'bladewear': return d.bladeWorn; // open = blade needs service
   }
 }
