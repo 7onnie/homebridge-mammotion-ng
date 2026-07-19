@@ -12,12 +12,13 @@ export const CONTACT_NOT_DETECTED = 1;
 // "Undocked" because the alerting (open) state is "away from dock" — the mower
 // is docked ~90% of the time, so resting must read CLOSED (no persistent
 // warning). See eventFor(): closed = resting, open = the named event.
-export type SensorKind = 'docked' | 'mowing' | 'error' | 'bladewear';
+export type SensorKind = 'docked' | 'mowing' | 'error' | 'returning' | 'bladewear';
 
 export const SENSOR_LABEL: Record<SensorKind, string> = {
   docked: 'Undocked',
   mowing: 'Mowing',
   error: 'Problem',
+  returning: 'Returning'
   bladewear: 'Blade Service',
 };
 
@@ -27,6 +28,7 @@ function eventFor(kind: SensorKind, d: DerivedState): boolean {
     case 'docked': return !d.docked;   // open = undocked / away
     case 'mowing': return d.mowing;    // open = mowing
     case 'error': return d.error;      // open = problem
+    case 'returning': return d.returning; // open = returning to dock
     case 'bladewear': return d.bladeWorn; // open = blade needs service
   }
 }
