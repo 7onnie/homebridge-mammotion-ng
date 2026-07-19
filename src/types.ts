@@ -18,6 +18,7 @@ export interface MammotionPlatformConfig {
   sensorDocked?: boolean;
   sensorMowing?: boolean;
   sensorError?: boolean;
+  sensorReturning?:boolean;
   errorIncludesOffline?: boolean;
   sensorDebounceSeconds?: number;
   offlineGracePolls?: number;
@@ -95,6 +96,7 @@ export interface DerivedState {
   docked: boolean;
   mowing: boolean;
   error: boolean;
+  returning: boolean;
   active: boolean; // mowing || returning
   bladeWorn: boolean;
   mowPercent: number; // 0-100
