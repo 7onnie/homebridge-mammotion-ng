@@ -18,7 +18,7 @@ export const SENSOR_LABEL: Record<SensorKind, string> = {
   docked: 'Undocked',
   mowing: 'Mowing',
   error: 'Problem',
-  returning: 'Returning'
+  returning: 'Returning',
   bladewear: 'Blade Service',
 };
 
@@ -28,7 +28,7 @@ function eventFor(kind: SensorKind, d: DerivedState): boolean {
     case 'docked': return !d.docked;   // open = undocked / away
     case 'mowing': return d.mowing;    // open = mowing
     case 'error': return d.error;      // open = problem
-    case 'returning': return d.returning; // open = returning to dock
+    case 'returning': return d.returning;      // open = problem  
     case 'bladewear': return d.bladeWorn; // open = blade needs service
   }
 }
