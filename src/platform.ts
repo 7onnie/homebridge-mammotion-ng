@@ -268,6 +268,7 @@ export class MammotionPlatform implements DynamicPlatformPlugin {
       { kind: 'docked', on: this.config.sensorDocked !== false },
       { kind: 'mowing', on: this.config.sensorMowing !== false },
       { kind: 'error', on: this.config.sensorError !== false },
+      { kind: 'returning', on: this.config.sensorReturning !== false },
       { kind: 'bladewear', on: this.config.sensorBladeWear === true },
     ];
 
