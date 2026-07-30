@@ -18,7 +18,7 @@ export interface MammotionPlatformConfig {
   sensorDocked?: boolean;
   sensorMowing?: boolean;
   sensorError?: boolean;
-  sensorReturning?:boolean;
+  sensorReturning?: boolean;
   errorIncludesOffline?: boolean;
   sensorDebounceSeconds?: number;
   offlineGracePolls?: number;

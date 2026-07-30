@@ -16,7 +16,7 @@
 ## Features
 
 - **Matter Robot Vacuum** (Homebridge 2.x): Start, Pause, Resume, Dock, and battery status as a standard Matter RVC accessory. Falls back to a HomeKit Switch on Homebridge 1.x.
-- **HomeKit trigger sensors**: Three contact sensors (Docked/finished, Mowing/active, Problem/stuck) that you can use in Apple Home automations. Apple Home cannot trigger automations directly on a Matter vacuum's state — the sensors bridge that gap.
+- **HomeKit trigger sensors**: Four contact sensors (Docked/finished, Mowing/active, Problem/stuck, Returning-to-dock) that you can use in Apple Home automations. Apple Home cannot trigger automations directly on a Matter vacuum's state — the sensors bridge that gap.
 - **Abort Mowing switch** (opt-in): A momentary switch that immediately ends the current job and returns the mower to its dock. Off by default because it is destructive.
 
 ## Requirements
@@ -62,6 +62,7 @@ Minimal config:
 | `sensorDocked` | boolean | `true` | Include the Docked/finished sensor (visible when `enableStateSensors` is on). |
 | `sensorMowing` | boolean | `true` | Include the Mowing/active sensor. |
 | `sensorError` | boolean | `true` | Include the Problem/stuck sensor. |
+| `sensorReturning` | boolean | `true` | Include the Returning-to-dock sensor (opens while the mower is heading back to its dock). |
 | `errorIncludesOffline` | boolean | `true` | Treat mower offline as a problem state (triggers the Problem sensor). |
 | `sensorDebounceSeconds` | integer | `30` | How long a state must hold before a sensor flips (0–300 s). Problem states are reported immediately. |
 | `enableAbortSwitch` | boolean | `false` | Expose a momentary Abort Mowing switch. Ends the current job and returns to dock. **Destructive — off by default.** |
@@ -94,10 +95,14 @@ npx vitest run
 Compared to [`willmot/homebridge-mammotion`](https://github.com/willmot/homebridge-mammotion):
 
 - **Matter + HAP coexistence**: the Matter RVC accessory and the HomeKit trigger sensors are registered in the same Homebridge session without conflicting.
-- **Trigger sensors**: the three Docked / Mowing / Problem contact sensors are new to this fork. They exist specifically because Apple Home cannot trigger automations on a Matter vacuum's state directly.
+- **Trigger sensors**: the Docked / Mowing / Problem / Returning contact sensors are new to this fork. They exist specifically because Apple Home cannot trigger automations on a Matter vacuum's state directly.
 - **Abort Mowing switch**: opt-in momentary switch that ends the active job and returns the mower to dock.
 - **pymammotion 0.8.x / Python 3.13**: updated and pinned dependency stack; the managed venv targets Python 3.13.
 - **Saved-plan start fix**: starting a job by saved plan ID works correctly (upstream had a mapping bug).
+
+## Troubleshooting
+
+**`Error: Mammotion startup failed: 'RTKBaseStationDevice'`** — reported with alternative positioning setups (e.g. iNavi Positioning) where an RTK base station is still bound to the account. Unbind the RTK Station in the official Mammotion app and restart Homebridge. Thanks to [@Wazza151](https://github.com/Wazza151) for reporting the fix — see [#1](https://github.com/7onnie/homebridge-mammotion-ng/issues/1).
 
 ## Notes
 
