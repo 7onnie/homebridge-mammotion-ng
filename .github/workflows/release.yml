@@ -11,6 +11,7 @@ name: Release
 #   for the package, so OIDC is the path. Nothing publishes until a version bump.
 
 on:
+  workflow_dispatch:   # manual release trigger (releases the current package.json version if untagged)
   push:
     branches: [main]
     paths: ['package.json']
@@ -35,8 +36,10 @@ jobs:
           registry-url: 'https://registry.npmjs.org'
 
       # Node 20 ships npm 10.x; npm Trusted Publishers OIDC needs >= 11.5.1.
+      # Pin to npm 11 (last major supporting Node 20) — npm@latest is now 12.x
+      # which requires Node >= 22 and fails EBADENGINE on this runner.
       - name: Upgrade npm (OIDC trusted publishing support)
-        run: npm install -g npm@latest
+        run: npm install -g npm@11
 
       - name: Detect version bump
         id: bump
@@ -46,12 +49,16 @@ jobs:
           OLD=$(node -p "require('/tmp/old-package.json').version || 'none'")
           echo "new=$NEW" >> "$GITHUB_OUTPUT"
           echo "old=$OLD" >> "$GITHUB_OUTPUT"
-          if [ "$NEW" != "$OLD" ] && ! git rev-parse "v$NEW" >/dev/null 2>&1; then
+          # Release when the current package.json version has no matching tag yet.
+          # Tag existence is the source of truth (idempotent), instead of an
+          # HEAD~1 diff — a revert+rebump or rebase can null out the bump across
+          # a push's net diff and silently skip the release. The tag check can't.
+          if ! git rev-parse "v$NEW" >/dev/null 2>&1; then
             echo "release=true" >> "$GITHUB_OUTPUT"
-            echo "Version changed: $OLD -> $NEW (will release v$NEW)"
+            echo "No tag v$NEW yet (prev package.json was $OLD) — will release v$NEW."
           else
             echo "release=false" >> "$GITHUB_OUTPUT"
-            echo "No new version to release (old=$OLD new=$NEW)."
+            echo "Tag v$NEW already exists — nothing to release (prev=$OLD)."
           fi
 
       # --ignore-scripts: the package's postinstall provisions a Python venv for
