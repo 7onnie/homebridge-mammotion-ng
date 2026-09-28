@@ -26,7 +26,11 @@ const os = require('node:os');
 
 const REQUIRED_MAJOR = 3;
 const REQUIRED_MINOR = 13;
-const PIP_SPECS = ['pymammotion==0.8.8', 'packaging', 'betterproto2>=0.9,<0.10'];
+// 2026-09-28: 0.8.8 -> 0.9.9. Grund ist der user-initiated Bypass aus Issue #183:
+// ab 0.9.x umgeht ein Kommando mit Priority.USER das Offline-Gate, statt still
+// verworfen zu werden. Der Fork muss die Prioritaet dafuer SELBST setzen (bridge.py
+// _send_command) — ein reiner Versionssprung allein aendert nichts.
+const PIP_SPECS = ['pymammotion==0.9.9', 'packaging', 'betterproto2>=0.9,<0.10'];
 const PBS_LATEST_API = 'https://api.github.com/repos/astral-sh/python-build-standalone/releases/latest';
 
 const root = join(__dirname, '..');

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Persistent JSONL bridge between Homebridge and PyMammotion.
 
-Adapted for pymammotion 0.8.x (verified against 0.8.8).
+Adapted for pymammotion 0.9.x (migriert von 0.8.8 auf 0.9.9, siehe CHANGELOG).
 
 The external JSON-RPC-over-stdio contract is UNCHANGED from the 0.5.75 bridge so
 the (unmodified) Node side keeps working:
@@ -43,7 +43,9 @@ from typing import Any
 
 from pymammotion.client import MammotionClient
 from pymammotion.const import APP_VERSION
-from pymammotion.utility.constant.device_constant import WorkMode, device_mode
+from pymammotion.messaging.command_queue import Priority
+from pymammotion.utility.constant.device_enums import WorkMode
+from pymammotion.utility.constant.display import device_mode
 
 # pymammotion issue #137 App-Version gate.
 #
@@ -418,19 +420,27 @@ class Bridge:
         await asyncio.sleep(0.15)
         return self._to_state(name, self._handle_by_name(name))
 
-    async def _send_command(self, name: str, command: str, **kwargs: Any) -> None:
-        await self.mammotion.send_command_with_args(name, command, **kwargs)
+    async def _send_command(
+        self, name: str, command: str, *, priority: Priority = Priority.NORMAL, **kwargs: Any
+    ) -> None:
+        # priority=USER kennzeichnet ein Kommando, auf das ein Mensch wartet.
+        # Seit pymammotion 0.9.x umgeht ein solches Kommando das Offline-Gate
+        # (client.py: "if not priority.is_direct and not handle.has_usable_transport")
+        # und darf die SELBST gesetzte Cloud-Quote ueberziehen — nicht aber einen
+        # laufenden 429-Bann der Cloud. Hintergrundverkehr bleibt NORMAL, sonst
+        # verbraucht Kartensynchronisation die Reserve, die fuer Tastendruecke da ist.
+        await self.mammotion.send_command_with_args(name, command, priority=priority, **kwargs)
 
     async def _start(self, name: str, mode: int | None) -> None:
         if mode == WorkMode.MODE_WORKING:
             return
         if mode == WorkMode.MODE_PAUSE:
-            await self._send_command(name, "resume_execute_task")
+            await self._send_command(name, "resume_execute_task", priority=Priority.USER)
             return
         # Idle / docked / returning: a bare start_job is a no-op (no task loaded).
         # Execute the saved plan via single_schedule, like the official app.
         if mode == WorkMode.MODE_RETURNING:
-            await self._send_command(name, "cancel_return_to_dock")
+            await self._send_command(name, "cancel_return_to_dock", priority=Priority.USER)
         plan_state = self._raw_state(self._handle_by_name(name))
         plan_id, _label = self._resolve_plan_id(plan_state, prefer_name=self.default_plan)
         if not plan_id:
@@ -438,7 +448,7 @@ class Bridge:
             # fall back to the last non-empty plan list seen for this device.
             plan_id = self._cached_plan_id(name, prefer_name=self.default_plan)
         if plan_id:
-            await self._send_command(name, "single_schedule", plan_id=plan_id)
+            await self._send_command(name, "single_schedule", plan_id=plan_id, priority=Priority.USER)
             return
         # No saved plan: query_generate_route_information + start_job only starts a
         # degenerate empty task (live-verified 2026-07-04 — instant "100%" completion,
@@ -451,29 +461,29 @@ class Bridge:
     async def _start_plan(self, name: str, plan_id: str, mode: int | None) -> None:
         """Run one specific saved plan (backs the per-plan 'Run <plan>' switches)."""
         if mode == WorkMode.MODE_RETURNING:
-            await self._send_command(name, "cancel_return_to_dock")
-        await self._send_command(name, "single_schedule", plan_id=plan_id)
+            await self._send_command(name, "cancel_return_to_dock", priority=Priority.USER)
+        await self._send_command(name, "single_schedule", plan_id=plan_id, priority=Priority.USER)
 
     async def _pause(self, name: str, mode: int | None) -> None:
         if mode == WorkMode.MODE_WORKING:
-            await self._send_command(name, "pause_execute_task")
+            await self._send_command(name, "pause_execute_task", priority=Priority.USER)
         elif mode == WorkMode.MODE_RETURNING:
-            await self._send_command(name, "cancel_return_to_dock")
+            await self._send_command(name, "cancel_return_to_dock", priority=Priority.USER)
 
     async def _dock(self, name: str, mode: int | None, charge_state: int | None) -> None:
         if charge_state != 0:
             return
 
         if mode == WorkMode.MODE_WORKING:
-            await self._send_command(name, "pause_execute_task")
+            await self._send_command(name, "pause_execute_task", priority=Priority.USER)
             # return_to_dock sent while the device is still processing the
             # pause is silently ignored — wait for WORKING to clear first.
             await self._wait_leave_modes(name, {WorkMode.MODE_WORKING})
 
         if mode == WorkMode.MODE_RETURNING:
-            await self._send_command(name, "cancel_return_to_dock")
+            await self._send_command(name, "cancel_return_to_dock", priority=Priority.USER)
 
-        await self._send_command(name, "return_to_dock")
+        await self._send_command(name, "return_to_dock", priority=Priority.USER)
 
     async def _wait_leave_modes(self, name: str, modes: set[int], timeout: float = 12.0) -> Any:
         """Poll fresh reports until sys_status leaves *modes* (or timeout).
@@ -495,16 +505,16 @@ class Bridge:
     async def _cancel(self, name: str, mode: int | None) -> dict:
         partial = {"cancelled": False, "docked": False, "dock_error": None}
         if mode == WorkMode.MODE_WORKING:
-            await self._send_command(name, "pause_execute_task")
+            await self._send_command(name, "pause_execute_task", priority=Priority.USER)
             await self._request_iot_sync(name)
-        await self._send_command(name, "cancel_job")
+        await self._send_command(name, "cancel_job", priority=Priority.USER)
         partial["cancelled"] = True
         # Wait until the cancel has actually settled (device left WORKING/PAUSE)
         # before deciding whether to send the mower home — see _wait_leave_modes.
         dev = await self._wait_leave_modes(name, {WorkMode.MODE_WORKING, WorkMode.MODE_PAUSE})
         if int(getattr(dev, "charge_state", 0) or 0) == 0 and dev.sys_status != WorkMode.MODE_RETURNING:
             try:
-                await self._send_command(name, "return_to_dock")
+                await self._send_command(name, "return_to_dock", priority=Priority.USER)
                 partial["docked"] = True
             except Exception as ex:  # mower stopped but dock failed -> report, don't raise
                 partial["dock_error"] = repr(ex)
