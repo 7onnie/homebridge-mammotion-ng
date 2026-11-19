@@ -30,7 +30,10 @@ const REQUIRED_MINOR = 13;
 // ab 0.9.x umgeht ein Kommando mit Priority.USER das Offline-Gate, statt still
 // verworfen zu werden. Der Fork muss die Prioritaet dafuer SELBST setzen (bridge.py
 // _send_command) — ein reiner Versionssprung allein aendert nichts.
-const PIP_SPECS = ['pymammotion==0.9.9', 'packaging', 'betterproto2>=0.9,<0.10'];
+// 2026-11-19: 0.9.9 -> 0.10.15. Bypass (client.py: Priority.is_direct) unveraendert, dazu
+// Quota/Ban-Split (nur 429-Ban blockt User-Kommandos) und der firmware_version-Fix.
+// 0.10.15 pinnt betterproto2==0.10.0 — der alte Pin <0.10 haette die Installation gesprengt.
+const PIP_SPECS = ['pymammotion==0.10.15', 'packaging', 'betterproto2==0.10.0'];
 const PBS_LATEST_API = 'https://api.github.com/repos/astral-sh/python-build-standalone/releases/latest';
 
 const root = join(__dirname, '..');
