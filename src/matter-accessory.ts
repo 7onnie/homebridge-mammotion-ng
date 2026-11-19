@@ -82,6 +82,9 @@ export class MammotionMatterVacuum {
         rvcCleanMode: {
           supportedModes: [
             { label: 'Vacuum', mode: 0, modeTags: [{ value: 16385 }] },
+            // Matter verlangt mindestens 2 Eintraege (supportedModes "2 to 255"); Homebridge 2.5 /
+            // @matter 0.18 lehnt die Anmeldung sonst ab. Zweiter Modus ist nur Platzhalter.
+            { label: 'Quiet', mode: 1, modeTags: [{ value: 2 }] },
           ],
           currentMode: 0,
         },
@@ -106,6 +109,12 @@ export class MammotionMatterVacuum {
             } else {
               await this.client.command(this.device.name, 'dock');
             }
+          },
+        },
+        rvcCleanMode: {
+          // Der Maeher kennt nur einen Betriebsmodus; Moduswechsel werden angenommen und ignoriert.
+          changeToMode: async () => {
+            /* no-op */
           },
         },
         rvcOperationalState: {
