@@ -6,10 +6,15 @@ import type { Logger } from 'homebridge';
 const REQUIRED_MAJOR = 3;
 const REQUIRED_MINOR = 13;
 
+// Single source of truth is PIP_SPECS in scripts/bootstrap-python.js; a test
+// asserts both stay identical.
+export const PINNED_PYMAMMOTION_VERSION = '0.10.15';
+
 export type PythonProbe = {
   available: boolean;
   executable?: string;
   hasPyMammotion: boolean;
+  pymammotionVersion?: string;
   major?: number;
   minor?: number;
   patch?: number;
@@ -36,12 +41,31 @@ export function versionIsSupported(probe: PythonProbe): boolean {
   return probe.minor >= REQUIRED_MINOR;
 }
 
+// pymammotion present AND exactly the pinned version. A present-but-different
+// version must never be accepted silently (issue #4).
+export function pymammotionMatchesPin(probe: PythonProbe): boolean {
+  return probe.hasPyMammotion && probe.pymammotionVersion === PINNED_PYMAMMOTION_VERSION;
+}
+
+export function pymammotionPinProblem(probe: PythonProbe): string {
+  if (!probe.hasPyMammotion) {
+    return 'module "pymammotion" is missing';
+  }
+  return `pymammotion ${probe.pymammotionVersion ?? '(unknown version)'} is installed but this plugin requires exactly ${PINNED_PYMAMMOTION_VERSION}`;
+}
+
 export function versionLabel(probe: PythonProbe): string {
   return `${probe.major ?? '?'}.${probe.minor ?? '?'}.${probe.patch ?? '?'}`;
 }
 
 export async function probePython(pythonPath: string): Promise<PythonProbe> {
-  const script = 'import importlib.util, json, sys; print(json.dumps({"executable": sys.executable, "version": [sys.version_info[0], sys.version_info[1], sys.version_info[2]], "has_pymammotion": bool(importlib.util.find_spec("pymammotion"))}))';
+  const script = [
+    'import importlib.util, importlib.metadata as m, json, sys',
+    'has = bool(importlib.util.find_spec("pymammotion"))',
+    'try: pv = m.version("pymammotion") if has else None',
+    'except Exception: pv = None',
+    'print(json.dumps({"executable": sys.executable, "version": [sys.version_info[0], sys.version_info[1], sys.version_info[2]], "has_pymammotion": has, "pymammotion_version": pv}))',
+  ].join('\n');
 
   const result = await runCommand(pythonPath, ['-c', script]);
   if (result.code !== 0) {
@@ -57,6 +81,7 @@ export async function probePython(pythonPath: string): Promise<PythonProbe> {
       executable: string;
       version: [number, number, number];
       has_pymammotion: boolean;
+      pymammotion_version?: string | null;
     };
 
     return {
@@ -66,6 +91,7 @@ export async function probePython(pythonPath: string): Promise<PythonProbe> {
       minor: parsed.version[1],
       patch: parsed.version[2],
       hasPyMammotion: parsed.has_pymammotion,
+      pymammotionVersion: parsed.pymammotion_version ?? undefined,
     };
   } catch {
     return { available: false, hasPyMammotion: false, error: 'failed to parse python probe output' };
@@ -78,8 +104,11 @@ export async function probePython(pythonPath: string): Promise<PythonProbe> {
 export async function bootstrapManagedPython(log: Logger): Promise<string> {
   const managedPython = managedVenvPythonPath();
   const existingProbe = await probePython(managedPython);
-  if (existingProbe.available && versionIsSupported(existingProbe) && existingProbe.hasPyMammotion) {
+  if (existingProbe.available && versionIsSupported(existingProbe) && pymammotionMatchesPin(existingProbe)) {
     return managedPython;
+  }
+  if (existingProbe.available && existingProbe.hasPyMammotion) {
+    log.warn(`Managed environment: ${pymammotionPinProblem(existingProbe)} — reinstalling the pinned version.`);
   }
 
   log.info('Preparing the managed Python 3.13 runtime for the Mammotion bridge (first run may download Python and take a few minutes).');
@@ -90,10 +119,10 @@ export async function bootstrapManagedPython(log: Logger): Promise<string> {
   }
 
   const finalProbe = await probePython(managedPython);
-  if (!finalProbe.available || !finalProbe.hasPyMammotion) {
+  if (!finalProbe.available || !pymammotionMatchesPin(finalProbe)) {
     throw new Error(
       [
-        `Managed Python bootstrap ran but pymammotion is still unavailable at ${managedPython}.`,
+        `Managed Python bootstrap ran but the pinned pymammotion is not usable at ${managedPython} (${finalProbe.available ? pymammotionPinProblem(finalProbe) : 'interpreter not executable'}).`,
         `Bootstrap output: ${(result.stdout || result.stderr).trim() || '(none)'}`,
       ].join(' '),
     );

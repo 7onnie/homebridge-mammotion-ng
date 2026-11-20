@@ -15,6 +15,7 @@ import { MammotionSensorAccessory, SENSOR_LABEL, type SensorKind, type HistoryLo
 import { MammotionProgressAccessory } from './progress-accessory';
 import { PLATFORM_NAME, PLUGIN_NAME } from './settings';
 import { mapState } from './state-mapper';
+import { StartupRetry } from './startup-retry';
 import type { DerivedState, MammotionDeviceInfo, MammotionPlan, MammotionPlatformConfig, MammotionState } from './types';
 import FakeGatoHistoryServiceFactory = require('fakegato-history');
 
@@ -44,6 +45,7 @@ export class MammotionPlatform implements DynamicPlatformPlugin {
   private readonly pollingSeconds: number;
   private pollTimer?: NodeJS.Timeout;
   private started = false;
+  private startupRetry?: StartupRetry;
   private readonly client: MammotionClient;
   private readonly matterEnabled: boolean;
   private readonly sensorHandlers = new Map<string, MammotionSensorAccessory[]>();
@@ -131,7 +133,17 @@ export class MammotionPlatform implements DynamicPlatformPlugin {
       timer.unref?.();
     });
 
-    try {
+    // First start can fail (bootstrap, login, bridge). Retry with capped backoff
+    // instead of leaving the platform without polling (issue #5).
+    this.startupRetry = new StartupRetry({
+      attempt: () => this.attemptStartup(),
+      log: this.log,
+    });
+    await this.startupRetry.run();
+  }
+
+  private async attemptStartup(): Promise<void> {
+    {
       await this.client.start();
       if (this.matterEnabled) {
         await this.discoverAndSyncMatterAccessories();
@@ -145,20 +157,21 @@ export class MammotionPlatform implements DynamicPlatformPlugin {
       this.armCachedPlanSwitches();
       await this.pollOnce();
 
-      this.pollTimer = setInterval(() => {
-        void this.pollOnce().catch((error: Error) => {
-          this.log.warn(`Polling failed: ${error.message}`);
-        });
-      }, this.pollingSeconds * 1000);
+      if (!this.pollTimer) {
+        this.pollTimer = setInterval(() => {
+          void this.pollOnce().catch((error: Error) => {
+            this.log.warn(`Polling failed: ${error.message}`);
+          });
+        }, this.pollingSeconds * 1000);
+      }
 
       this.log.info(`Mammotion polling every ${this.pollingSeconds}s`);
-    } catch (error) {
-      this.log.error(`Mammotion startup failed: ${(error as Error).message}`);
     }
   }
 
   private async shutdown(): Promise<void> {
     this.shuttingDown = true;
+    this.startupRetry?.stop();
     if (this.pollTimer) {
       clearInterval(this.pollTimer);
       this.pollTimer = undefined;
@@ -247,6 +260,12 @@ export class MammotionPlatform implements DynamicPlatformPlugin {
 
     if (toRegister.length > 0) {
       await matter.registerPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, toRegister);
+      // Remember them so a startup retry doesn't register duplicates.
+      for (const handler of this.matterHandlers.values()) {
+        if (!this.cachedMatterAccessories.has(handler.uuid)) {
+          this.cachedMatterAccessories.set(handler.uuid, true);
+        }
+      }
       this.log.info(`Registered ${toRegister.length} Matter robotic vacuum accessory(s)`);
     }
 

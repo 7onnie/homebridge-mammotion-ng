@@ -11,9 +11,12 @@ import type {
   MammotionState,
 } from './types';
 import {
+  PINNED_PYMAMMOTION_VERSION,
   bootstrapManagedPython,
   managedVenvPythonPath,
   probePython,
+  pymammotionMatchesPin,
+  pymammotionPinProblem,
   versionIsSupported,
   versionLabel,
 } from './python-env';
@@ -102,12 +105,23 @@ export class MammotionClient extends EventEmitter {
       }
     });
 
-    await this.request('init', {
-      email: this.config.email,
-      password: this.config.password,
-      areaNameFallbacks: this.config.areaNameFallbacks ?? {},
-      defaultPlan: this.config.defaultPlan ?? '',
-    });
+    try {
+      await this.request('init', {
+        email: this.config.email,
+        password: this.config.password,
+        areaNameFallbacks: this.config.areaNameFallbacks ?? {},
+        defaultPlan: this.config.defaultPlan ?? '',
+      });
+    } catch (error) {
+      // Failed login must not leave a half-initialised bridge behind: start()
+      // short-circuits on this.process, so a retry would otherwise be a no-op.
+      // Detach first so the exit handler doesn't report it as an unexpected death.
+      if (this.process === proc) {
+        this.process = undefined;
+      }
+      proc.kill();
+      throw error;
+    }
   }
 
   async stop(): Promise<void> {
@@ -232,7 +246,7 @@ export class MammotionClient extends EventEmitter {
 
   private async verifyPythonEnvironment(): Promise<void> {
     let probe = await probePython(this.pythonPath);
-    if (!probe.available || !versionIsSupported(probe) || !probe.hasPyMammotion) {
+    if (!probe.available || !versionIsSupported(probe) || !pymammotionMatchesPin(probe)) {
       if (!this.userConfiguredPythonPath) {
         this.log.info('Preparing managed Python environment for Mammotion bridge...');
         this.pythonPath = await bootstrapManagedPython(this.log);
@@ -258,19 +272,19 @@ export class MammotionClient extends EventEmitter {
       );
     }
 
-    if (!probe.hasPyMammotion) {
+    if (!pymammotionMatchesPin(probe)) {
       if (this.userConfiguredPythonPath) {
-        const installHint = `${this.pythonPath} -m pip install --upgrade pip pymammotion==0.8.8 packaging "betterproto2>=0.9,<0.10"`;
+        const installHint = `${this.pythonPath} -m pip install --upgrade pip pymammotion==${PINNED_PYMAMMOTION_VERSION} packaging betterproto2==0.10.0`;
         throw new Error(
           [
-            `Python found at ${probe.executable ?? this.pythonPath} but module "pymammotion" is missing.`,
+            `Python found at ${probe.executable ?? this.pythonPath} but ${pymammotionPinProblem(probe)}.`,
             `Install it with: ${installHint}`,
             'Or remove "pythonPath" to use managed runtime.',
           ].join(' '),
         );
       }
 
-      throw new Error('Managed runtime bootstrap completed but pymammotion is still unavailable.');
+      throw new Error(`Managed runtime bootstrap completed but ${pymammotionPinProblem(probe)}.`);
     }
   }
 }

@@ -47,20 +47,31 @@ const log = (m) => console.log(`[homebridge-mammotion-ng] ${m}`);
 const warn = (m) => console.warn(`[homebridge-mammotion-ng] ${m}`);
 
 function probe(python) {
-  const script = 'import importlib.util,json,sys;print(json.dumps({"v":[sys.version_info[0],sys.version_info[1]],"pm":bool(importlib.util.find_spec("pymammotion"))}))';
+  const script = [
+    'import importlib.util,importlib.metadata as m,json,sys',
+    'has=bool(importlib.util.find_spec("pymammotion"))',
+    'try: pv=m.version("pymammotion") if has else None',
+    'except Exception: pv=None',
+    'print(json.dumps({"v":[sys.version_info[0],sys.version_info[1]],"pm":has,"pv":pv}))',
+  ].join('\n');
   const r = spawnSync(python, ['-c', script], { encoding: 'utf8' });
   if (r.status !== 0 || !r.stdout) {
     return null;
   }
   try {
     const p = JSON.parse(r.stdout.trim());
-    return { major: p.v[0], minor: p.v[1], hasPyMammotion: !!p.pm };
+    return { major: p.v[0], minor: p.v[1], hasPyMammotion: !!p.pm, pymammotionVersion: p.pv || null };
   } catch {
     return null;
   }
 }
 
 const supported = (p) => !!p && p.major === REQUIRED_MAJOR && p.minor >= REQUIRED_MINOR;
+
+// Version of the pymammotion pin in PIP_SPECS (issue #4: a present-but-different
+// version must not count as "ready").
+const PINNED_VERSION = PIP_SPECS.find((s) => s.startsWith('pymammotion==')).split('==')[1];
+const ready = (p) => supported(p) && p.hasPyMammotion && p.pymammotionVersion === PINNED_VERSION;
 
 function run(cmd, args, step) {
   const r = spawnSync(cmd, args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
@@ -210,9 +221,12 @@ async function main() {
   }
 
   const existing = probe(venvPython);
-  if (supported(existing) && existing.hasPyMammotion) {
+  if (ready(existing)) {
     log('Managed Python environment already ready.');
     return;
+  }
+  if (supported(existing) && existing.hasPyMammotion) {
+    warn(`Installed pymammotion ${existing.pymammotionVersion || '(unknown)'} differs from the pin ${PINNED_VERSION}; reinstalling the pinned version.`);
   }
 
   const candidates = [
@@ -259,14 +273,18 @@ async function main() {
   }
 
   const final = probe(venvPython);
-  if (supported(final) && final.hasPyMammotion) {
+  if (ready(final)) {
     log('Python bootstrap complete.');
   } else {
-    warn('Bootstrap finished but the pymammotion import check did not pass; the runtime will retry.');
+    warn(`Bootstrap finished but pymammotion ${PINNED_VERSION} is not importable (found: ${(final && final.pymammotionVersion) || 'none'}); the runtime will retry.`);
   }
 }
 
-main().catch((e) => {
-  warn(`Python bootstrap error: ${e && e.message ? e.message : e}`);
-  process.exit(0);
-});
+if (require.main === module) {
+  main().catch((e) => {
+    warn(`Python bootstrap error: ${e && e.message ? e.message : e}`);
+    process.exit(0);
+  });
+}
+
+module.exports = { PIP_SPECS, PINNED_VERSION, ready, supported };
