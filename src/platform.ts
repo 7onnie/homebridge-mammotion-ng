@@ -1,3 +1,4 @@
+import { retryUntilSuccess } from './retry';
 import type {
   API,
   DynamicPlatformPlugin,
@@ -131,30 +132,43 @@ export class MammotionPlatform implements DynamicPlatformPlugin {
       timer.unref?.();
     });
 
-    try {
-      await this.client.start();
-      if (this.matterEnabled) {
-        await this.discoverAndSyncMatterAccessories();
-      } else {
-        await this.discoverAndSyncAccessories(); // legacy HAP switch fallback
-      }
-      await this.syncSensors();
-      await this.syncAbortSwitch();
-      await this.syncProgress();
-      this.cleanupDisabledPlanSwitches();
-      this.armCachedPlanSwitches();
-      await this.pollOnce();
+    // Ein einmaliger Fehlschlag (Cloud kurz weg, Login-Timeout) liess die Plattform
+    // bisher bis zum Homebridge-Neustart ohne Polling zurueck (Issue #5). Die Sync-Schritte
+    // sind wiederholbar (Zugriff ueber bestehende UUIDs), client.start() ist idempotent.
+    await retryUntilSuccess(() => this.bringUp(), {
+      initialMs: 10_000,
+      maxMs: 600_000,
+      isStopped: () => this.shuttingDown,
+      onFailure: (error, delay) => {
+        this.log.error(`Mammotion startup failed: ${(error as Error).message} — retrying in ${Math.round(delay / 1000)}s`);
+      },
+    });
+  }
 
-      this.pollTimer = setInterval(() => {
-        void this.pollOnce().catch((error: Error) => {
-          this.log.warn(`Polling failed: ${error.message}`);
-        });
-      }, this.pollingSeconds * 1000);
-
-      this.log.info(`Mammotion polling every ${this.pollingSeconds}s`);
-    } catch (error) {
-      this.log.error(`Mammotion startup failed: ${(error as Error).message}`);
+  private async bringUp(): Promise<void> {
+    await this.client.start();
+    if (this.matterEnabled) {
+      await this.discoverAndSyncMatterAccessories();
+    } else {
+      await this.discoverAndSyncAccessories(); // legacy HAP switch fallback
     }
+    await this.syncSensors();
+    await this.syncAbortSwitch();
+    await this.syncProgress();
+    this.cleanupDisabledPlanSwitches();
+    this.armCachedPlanSwitches();
+    await this.pollOnce();
+
+    if (this.pollTimer) {
+      clearInterval(this.pollTimer);
+    }
+    this.pollTimer = setInterval(() => {
+      void this.pollOnce().catch((error: Error) => {
+        this.log.warn(`Polling failed: ${error.message}`);
+      });
+    }, this.pollingSeconds * 1000);
+
+    this.log.info(`Mammotion polling every ${this.pollingSeconds}s`);
   }
 
   private async shutdown(): Promise<void> {

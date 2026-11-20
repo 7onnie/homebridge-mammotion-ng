@@ -24,6 +24,8 @@ const { spawnSync } = require('node:child_process');
 const https = require('node:https');
 const os = require('node:os');
 
+const { parsePins, envIsCurrent } = require('./bootstrap-lib.js');
+
 const REQUIRED_MAJOR = 3;
 const REQUIRED_MINOR = 13;
 // 2026-09-28: 0.8.8 -> 0.9.9. Grund ist der user-initiated Bypass aus Issue #183:
@@ -34,6 +36,7 @@ const REQUIRED_MINOR = 13;
 // Quota/Ban-Split (nur 429-Ban blockt User-Kommandos) und der firmware_version-Fix.
 // 0.10.15 pinnt betterproto2==0.10.0 — der alte Pin <0.10 haette die Installation gesprengt.
 const PIP_SPECS = ['pymammotion==0.10.15', 'packaging', 'betterproto2==0.10.0'];
+const PINS = parsePins(PIP_SPECS);
 const PBS_LATEST_API = 'https://api.github.com/repos/astral-sh/python-build-standalone/releases/latest';
 
 const root = join(__dirname, '..');
@@ -47,14 +50,24 @@ const log = (m) => console.log(`[homebridge-mammotion-ng] ${m}`);
 const warn = (m) => console.warn(`[homebridge-mammotion-ng] ${m}`);
 
 function probe(python) {
-  const script = 'import importlib.util,json,sys;print(json.dumps({"v":[sys.version_info[0],sys.version_info[1]],"pm":bool(importlib.util.find_spec("pymammotion"))}))';
+  // Versionen der gepinnten Pakete mitliefern, damit ein VORHANDENER, aber veralteter
+  // Stand erkannt wird (Issue #4) — find_spec allein sagt nur "importierbar".
+  const script = [
+    'import importlib.util,importlib.metadata as md,json,sys',
+    `pins=${JSON.stringify(Object.keys(PINS))}`,
+    'vers={}',
+    'for n in pins:',
+    '    try: vers[n]=md.version(n)',
+    '    except Exception: pass',
+    'print(json.dumps({"v":[sys.version_info[0],sys.version_info[1]],"pm":bool(importlib.util.find_spec("pymammotion")),"vers":vers}))',
+  ].join('\n');
   const r = spawnSync(python, ['-c', script], { encoding: 'utf8' });
   if (r.status !== 0 || !r.stdout) {
     return null;
   }
   try {
     const p = JSON.parse(r.stdout.trim());
-    return { major: p.v[0], minor: p.v[1], hasPyMammotion: !!p.pm };
+    return { major: p.v[0], minor: p.v[1], hasPyMammotion: !!p.pm, versions: p.vers || {} };
   } catch {
     return null;
   }
@@ -210,9 +223,12 @@ async function main() {
   }
 
   const existing = probe(venvPython);
-  if (supported(existing) && existing.hasPyMammotion) {
+  if (supported(existing) && existing.hasPyMammotion && envIsCurrent(existing.versions, PINS)) {
     log('Managed Python environment already ready.');
     return;
+  }
+  if (supported(existing) && existing.hasPyMammotion) {
+    log('Managed Python environment is outdated vs. the pinned versions — upgrading.');
   }
 
   const candidates = [
@@ -259,7 +275,7 @@ async function main() {
   }
 
   const final = probe(venvPython);
-  if (supported(final) && final.hasPyMammotion) {
+  if (supported(final) && final.hasPyMammotion && envIsCurrent(final.versions, PINS)) {
     log('Python bootstrap complete.');
   } else {
     warn('Bootstrap finished but the pymammotion import check did not pass; the runtime will retry.');
